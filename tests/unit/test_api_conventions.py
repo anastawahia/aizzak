@@ -486,6 +486,30 @@ def test_the_contract_publishes_every_field_of_the_job_a_client_polls() -> None:
     assert "updated_at" in contract
 
 
+def test_the_contract_publishes_message_citations_as_the_app_serves_them() -> None:
+    """th-1 -- ``MessageOut.citations`` and the ``Citation`` schema in
+    ``openapi.yaml`` are the ones the app serves, and the key is always there."""
+    schemas = SPEC["components"]["schemas"]
+    live = LIVE["components"]["schemas"]
+
+    assert set(schemas["MessageOut"]["properties"]) == set(live["MessageOut"]["properties"])
+    assert "citations" in schemas["MessageOut"]["properties"]
+    assert "citations" in live["MessageOut"]["required"]  # present on every response
+    assert set(schemas["Citation"]["properties"]) == set(live["Citation"]["properties"])
+    assert set(schemas["Citation"]["required"]) == {
+        "document_id",
+        "file_name",
+        "page",
+        "chunk_id",
+        "rank",
+    }
+    assert schemas["Citation"]["properties"]["document_id"]["format"] == "uuid"
+    assert schemas["Citation"]["properties"]["chunk_id"]["format"] == "uuid"
+    assert schemas["MessageOut"]["properties"]["citations"]["items"] == {
+        "$ref": "#/components/schemas/Citation"
+    }
+
+
 def test_a_timestamp_on_the_wire_ends_in_z() -> None:
     """The serialized form, not the declared one.
 

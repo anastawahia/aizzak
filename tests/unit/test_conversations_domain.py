@@ -12,7 +12,9 @@ from app.modules.conversations.domain.errors import (
     InvalidConversationInput,
 )
 from app.modules.conversations.domain.value_objects import (
+    MAX_CITATIONS,
     AgentKey,
+    Citation,
     ConversationKind,
     MessageContent,
     MessageRole,
@@ -249,3 +251,122 @@ def test_a_deleted_thread_refuses_to_be_asked_anything() -> None:
 
     with pytest.raises(ConversationDeletedError):
         conv.expect_clarification(["a.pdf"], utc_now())
+
+
+# --------------------------------------------------------------------------- #
+# Citation (th-1) and INV-CV4                                                  #
+# --------------------------------------------------------------------------- #
+_DOC = "0190aaaa-0000-7000-8000-000000000001"
+_CHUNK = "0190bbbb-0000-7000-8000-000000000001"
+
+
+def _citation(**overrides: object) -> Citation:
+    fields: dict[str, object] = {
+        "document_id": _DOC,
+        "file_name": "manual.pdf",
+        "page": 3,
+        "chunk_id": _CHUNK,
+        "rank": 1,
+    }
+    fields.update(overrides)
+    return Citation(**fields)  # type: ignore[arg-type]
+
+
+def test_citation_accepts_null_file_name_and_page() -> None:
+    cited = _citation(file_name=None, page=None)
+
+    assert cited.file_name is None
+    assert cited.page is None
+
+
+def test_citation_keeps_values_verbatim() -> None:
+    upper = _DOC.upper()
+
+    assert _citation(document_id=upper, file_name="  A b  ").document_id == upper
+    assert _citation(file_name="  A b  ").file_name == "  A b  "
+
+
+def test_citation_file_name_bound_is_255_characters() -> None:
+    assert len(_citation(file_name="a" * 255).file_name or "") == 255
+    with pytest.raises(InvalidConversationInput):
+        _citation(file_name="a" * 256)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"document_id": "doc-1"},
+        {"chunk_id": "chunk-a"},
+        {"document_id": 5},
+        {"file_name": ""},
+        {"file_name": 7},
+        {"page": 0},
+        {"page": True},
+        {"page": "3"},
+        {"rank": 0},
+        {"rank": True},
+        {"rank": "1"},
+    ],
+)
+def test_citation_rejects_malformed_values(overrides: dict[str, object]) -> None:
+    with pytest.raises(InvalidConversationInput):
+        _citation(**overrides)
+
+
+def test_message_has_no_citations_by_default() -> None:
+    conv = _conversation()
+    message = conv.append_message(
+        "m1", MessageRole.ASSISTANT, MessageContent(text="a"), None, utc_now()
+    )
+
+    assert message.citations is None
+
+
+def test_assistant_message_carries_citations_in_order() -> None:
+    conv = _conversation()
+    cited = (_citation(rank=1), _citation(rank=2))
+
+    message = conv.append_message(
+        "m1", MessageRole.ASSISTANT, MessageContent(text="a"), None, utc_now(), citations=cited
+    )
+
+    assert message.citations == cited
+
+
+def test_an_empty_citation_list_is_kept_distinct_from_none() -> None:
+    conv = _conversation()
+
+    message = conv.append_message(
+        "m1", MessageRole.ASSISTANT, MessageContent(text="a"), None, utc_now(), citations=()
+    )
+
+    assert message.citations == ()
+
+
+@pytest.mark.parametrize("role", [MessageRole.USER, MessageRole.SYSTEM, MessageRole.TOOL])
+def test_inv_cv4_only_assistant_messages_carry_citations(role: MessageRole) -> None:
+    conv = _conversation()
+
+    with pytest.raises(InvalidConversationInput):
+        conv.append_message(
+            "m1", role, MessageContent(text="a"), None, utc_now(), citations=(_citation(),)
+        )
+
+
+def test_inv_cv4_caps_citations_at_the_maximum() -> None:
+    conv = _conversation()
+    at_cap = tuple(_citation(rank=i + 1) for i in range(MAX_CITATIONS))
+
+    ok = conv.append_message(
+        "m1", MessageRole.ASSISTANT, MessageContent(text="a"), None, utc_now(), citations=at_cap
+    )
+    assert len(ok.citations or ()) == MAX_CITATIONS
+    with pytest.raises(InvalidConversationInput):
+        conv.append_message(
+            "m2",
+            MessageRole.ASSISTANT,
+            MessageContent(text="a"),
+            None,
+            utc_now(),
+            citations=(*at_cap, _citation(rank=51)),
+        )

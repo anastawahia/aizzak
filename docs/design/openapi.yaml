@@ -1348,9 +1348,25 @@ components:
         id: {type: string, format: uuid}
         role: {type: string, enum: [user, assistant, system, tool]}
         content: {type: object, additionalProperties: true}
+        citations:
+          type: array
+          nullable: true
+          maxItems: 50
+          items: { $ref: "#/components/schemas/Citation" }
+          description: "Sources the assistant answered from, stored with the message (gap th-1) and equal to the `citations` of that turn's `final` frame. Always present. `null` = none recorded (user messages, messages saved before this field, agents that emit none, cut-off replies, workflow step outputs). `[]` = the agent stated there are no sources. A snapshot taken at answer time: a later rename or delete of the file does not change it."
         token_count: {type: integer, nullable: true}
         seq: {type: integer}
         created_at: {type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$"}
+    Citation:
+      type: object
+      required: [document_id, file_name, page, chunk_id, rank]
+      description: "One retrieved source, in the shape `rag_agent` puts on `final` (03 §3.1). `file_name`/`page` are always present and `null` when the indexed chunk carried none."
+      properties:
+        document_id: {type: string, format: uuid}
+        file_name: {type: string, nullable: true, maxLength: 255}
+        page: {type: integer, nullable: true, minimum: 1}
+        chunk_id: {type: string, format: uuid}
+        rank: {type: integer, minimum: 1, description: "One-based retrieval rank, as emitted; never re-ordered."}
     MessageCreateIn:
       type: object
       required: [content]

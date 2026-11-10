@@ -34,7 +34,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from app.modules.conversations.adapters.sql_repository import conversations
+from app.modules.conversations.adapters.sql_repository import conversations, messages
 
 _ROOT = Path(__file__).resolve().parents[2]
 _CHAIN = _ROOT / "migrations" / "versions" / "conversations"
@@ -106,3 +106,64 @@ def test_the_column_is_nullable_because_nothing_pending_has_one_spelling() -> No
 
     assert column.nullable
     assert column.server_default is None
+
+
+# --------------------------------------------------------------------------- #
+# conversations.messages (ث-1)                                                 #
+# --------------------------------------------------------------------------- #
+_MESSAGES_DDL = re.compile(r"CREATE TABLE conversations\.messages \((.*?)\n\s*\)", re.DOTALL)
+_MESSAGES_ADDED = re.compile(r"ALTER TABLE conversations\.messages ADD COLUMN (\w+)")
+_CONSTRAINT_WORDS = frozenset({"CONSTRAINT", "PRIMARY", "UNIQUE", "FOREIGN", "CHECK", "REFERENCES"})
+
+
+def _messages_chain_columns() -> set[str]:
+    """Columns of ``conversations.messages`` as the chain builds it: the ones in
+    the ``CREATE TABLE`` of ``0001`` plus every later ``ADD COLUMN``."""
+    sql = _chain_sql()
+    match = _MESSAGES_DDL.search(sql)
+    assert match is not None, "0001 no longer creates conversations.messages in the expected form"
+    created = set()
+    for line in match.group(1).splitlines():
+        words = line.strip().split()
+        if words and words[0].upper() not in _CONSTRAINT_WORDS and not words[0].startswith("--"):
+            created.add(words[0])
+    return created | set(_MESSAGES_ADDED.findall(sql))
+
+
+def test_every_messages_column_the_adapter_names_is_created_by_the_chain() -> None:
+    """Same expensive direction as for ``conversations``: ``append_message``
+    inserts every column, so one missing ``ADD COLUMN`` breaks every append."""
+    adapter = {column.name for column in messages.columns}
+
+    assert adapter - _messages_chain_columns() == set()
+
+
+def test_every_messages_column_the_chain_creates_is_named_by_the_adapter() -> None:
+    """The silent direction: a column nothing reads or writes is never stored."""
+    adapter = {column.name for column in messages.columns}
+
+    assert _messages_chain_columns() - adapter == set()
+
+
+def test_the_citations_column_is_spelled_the_same_everywhere() -> None:
+    assert "citations" in {column.name for column in messages.columns}
+    assert "ALTER TABLE conversations.messages ADD COLUMN citations jsonb NULL" in _chain_sql()
+    assert "citations" in _DATA_MODEL.read_text(encoding="utf-8")
+
+
+def test_citations_is_nullable_without_a_default_and_writes_sql_null_for_none() -> None:
+    """NULL is "not recorded" and ``'[]'`` is "no sources": two different
+    statements. ``none_as_null`` is what stops Python ``None`` from being
+    stored as the JSON literal ``null`` -- a third spelling of the first."""
+    column = messages.columns["citations"]
+
+    assert column.nullable
+    assert column.server_default is None
+    assert column.type.none_as_null is True  # type: ignore[attr-defined]
+
+
+def test_the_citations_migration_downgrade_drops_the_column() -> None:
+    source = (_CHAIN / "0007_message_citations.py").read_text(encoding="utf-8")
+    downgrade = source.split("def downgrade()", 1)[1]
+
+    assert "DROP COLUMN IF EXISTS citations" in downgrade

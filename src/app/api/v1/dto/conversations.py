@@ -97,12 +97,25 @@ class ConversationModelIn(BaseModel):
     route: str | None
 
 
+class Citation(BaseModel):
+    """One stored source on a message (ث-1, 03 §2). The nested-object naming
+    of ``Usage`` (no ``Out`` suffix): it only ever appears inside ``MessageOut``."""
+
+    document_id: str
+    file_name: str | None
+    page: int | None
+    chunk_id: str
+    rank: int
+
+
 class MessageOut(BaseModel):
     """One message within a thread."""
 
     id: str
     role: str
     content: dict[str, Any]
+    # required-present, no default: the key is always on the wire (list or null)
+    citations: list[Citation] | None
     token_count: int | None
     seq: int
     created_at: datetime

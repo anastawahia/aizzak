@@ -30,6 +30,7 @@ from app.modules.conversations.domain.entities import Conversation
 from app.modules.conversations.domain.errors import ConversationDeletedError
 from app.modules.conversations.domain.value_objects import (
     AgentKey,
+    Citation,
     ConversationKind,
     MessageContent,
     MessageRole,
@@ -1055,3 +1056,160 @@ async def test_counts_by_space_with_no_ids_answers_empty_without_a_query(
     await repo_conversations.add(ctx, _conversation(workspace_id=ws, space_id=new_uuid7()))
 
     assert await repo_conversations.counts_by_space(ctx, []) == {}
+
+
+# --------------------------------------------------------------------------- #
+# citations (ث-1): jsonb round trip, [] vs NULL, tenant isolation             #
+# --------------------------------------------------------------------------- #
+_CITE_DOC_1 = "0190aaaa-0000-7000-8000-000000000001"
+_CITE_CHUNK_1 = "0190bbbb-0000-7000-8000-000000000001"
+_CITE_CHUNK_2 = "0190bbbb-0000-7000-8000-000000000002"
+
+
+def _two_citations() -> tuple[Citation, ...]:
+    return (
+        Citation(
+            document_id=_CITE_DOC_1,
+            file_name="دليل الصيانة ٢٠٢٦.pdf",
+            page=12,
+            chunk_id=_CITE_CHUNK_1,
+            rank=1,
+        ),
+        Citation(
+            document_id=_CITE_DOC_1,
+            file_name=None,
+            page=None,
+            chunk_id=_CITE_CHUNK_2,
+            rank=2,
+        ),
+    )
+
+
+async def _fetch_citations_as_owner(
+    owner_dsn: str, workspace_id: str, message_id: str
+) -> list[RowMapping]:
+    """``SELECT citations, citations IS NULL AS is_null`` as the owner, with the
+    GUC set to ``workspace_id`` (the caller picks the tenant under test)."""
+    engine = create_engine(DatabaseSettings(url=owner_dsn), poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(
+                text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": workspace_id}
+            )
+            result = await conn.execute(
+                text(
+                    "SELECT citations, citations IS NULL AS is_null "
+                    "FROM conversations.messages WHERE id = :id"
+                ),
+                {"id": message_id},
+            )
+            return list(result.mappings().all())
+    finally:
+        await engine.dispose()
+
+
+async def test_citations_round_trip_in_order_with_nulls_and_arabic_name(
+    repo_conversations: SqlConversationRepository,
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws)
+    await repo_conversations.add(ctx, conversation)
+
+    cited = _two_citations()
+    message = conversation.append_message(
+        new_uuid7(),
+        MessageRole.ASSISTANT,
+        MessageContent(text="answer"),
+        7,
+        utc_now(),
+        citations=cited,
+    )
+    await repo_conversations.append_message(ctx, message)
+
+    page = await repo_conversations.list_messages(ctx, conversation.id, limit=10, cursor=None)
+    assert [m.citations for m in page.data] == [cited]
+
+
+async def test_an_empty_citation_list_and_a_missing_one_stay_distinct(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws)
+    await repo_conversations.add(ctx, conversation)
+
+    now = utc_now()
+    user = conversation.append_message(
+        new_uuid7(), MessageRole.USER, MessageContent(text="q"), None, now
+    )
+    await repo_conversations.append_message(ctx, user)
+    no_sources = conversation.append_message(
+        new_uuid7(), MessageRole.ASSISTANT, MessageContent(text="a"), None, now, citations=()
+    )
+    await repo_conversations.append_message(ctx, no_sources)
+
+    page = await repo_conversations.list_messages(ctx, conversation.id, limit=10, cursor=None)
+    assert [m.citations for m in page.data] == [None, ()]
+
+    # SQL NULL, not the JSON literal `null` (proves `none_as_null`), and '[]' for ().
+    [user_row] = await _fetch_citations_as_owner(live_db.owner, ws, user.id)
+    assert user_row["is_null"] is True
+    [empty_row] = await _fetch_citations_as_owner(live_db.owner, ws, no_sources.id)
+    assert empty_row["is_null"] is False
+    assert empty_row["citations"] == []
+
+
+async def test_a_row_inserted_without_the_column_reads_back_as_none(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    """A row written before the column existed (raw INSERT, no `citations`)."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws)
+    await repo_conversations.add(ctx, conversation)
+
+    engine = create_engine(DatabaseSettings(url=live_db.owner), poolclass=NullPool)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": ws})
+            await conn.execute(
+                text(
+                    "INSERT INTO conversations.messages "
+                    "(id, conversation_id, workspace_id, role, content, seq) "
+                    "VALUES (:id, :cid, :ws, 'assistant', "
+                    'CAST(\'{"text": "old", "attachments": []}\' AS jsonb), 1)'
+                ),
+                {"id": new_uuid7(), "cid": conversation.id, "ws": ws},
+            )
+    finally:
+        await engine.dispose()
+
+    page = await repo_conversations.list_messages(ctx, conversation.id, limit=10, cursor=None)
+    assert [m.citations for m in page.data] == [None]
+
+
+async def test_citations_are_invisible_to_another_tenant(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    ctx_a, ctx_b = _ctx(ws_a), _ctx(ws_b)
+    conversation = _conversation(workspace_id=ws_a)
+    await repo_conversations.add(ctx_a, conversation)
+    message = conversation.append_message(
+        new_uuid7(),
+        MessageRole.ASSISTANT,
+        MessageContent(text="a"),
+        None,
+        utc_now(),
+        citations=_two_citations(),
+    )
+    await repo_conversations.append_message(ctx_a, message)
+
+    # tenant B: the repository finds nothing ...
+    page = await repo_conversations.list_messages(ctx_b, conversation.id, limit=10, cursor=None)
+    assert page.data == []
+    # ... and so does a raw SELECT of the column with B's GUC.
+    assert await _fetch_citations_as_owner(live_db.owner, ws_b, message.id) == []
+    # tenant A still sees it.
+    assert len(await _fetch_citations_as_owner(live_db.owner, ws_a, message.id)) == 1

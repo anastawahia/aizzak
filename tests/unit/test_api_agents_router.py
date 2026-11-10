@@ -99,6 +99,35 @@ class _EchoAgent(BaseAgent):
         yield AgentEvent(type="final", data={"text": payload, "stream": req.stream})
 
 
+_CITING_METADATA = AgentMetadata(
+    key="citing",
+    name="Citing",
+    version="1.0.0",
+    description="Answers and lists its sources (th-1).",
+    capabilities=frozenset(),
+    required_permissions=frozenset({"agents:invoke", "agents:read"}),
+)
+_CITATIONS: list[dict[str, object]] = [
+    {
+        "document_id": "0190aaaa-0000-7000-8000-000000000001",
+        "file_name": "manual.pdf",
+        "page": 3,
+        "chunk_id": "0190bbbb-0000-7000-8000-000000000001",
+        "rank": 1,
+    }
+]
+
+
+class _CitingAgent(BaseAgent):
+    metadata = _CITING_METADATA
+
+    async def initialize(self) -> None:
+        return None
+
+    async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        yield AgentEvent(type="final", data={"text": "the answer", "citations": _CITATIONS})
+
+
 class _FakeLLM:
     """A no-op provider. Only its ``provider`` label is read (by the metering
     wrapper); ``complete``/``stream`` are never reached, because the sole test
@@ -136,7 +165,9 @@ class _FakeWsAuth:
         raise AssertionError("not exercised")
 
 
-def _make_app_with_store(*, with_echo: bool = True) -> tuple[FastAPI, ConversationsStack]:
+def _make_app_with_store(
+    *, with_echo: bool = True, with_citing: bool = False
+) -> tuple[FastAPI, ConversationsStack]:
     registry = InMemoryAgentRegistry()
     # `_SPACE` is the ONE live space, so a body naming it opens a thread and a
     # body naming anything else is a 404 from the seam rather than a silent
@@ -144,6 +175,8 @@ def _make_app_with_store(*, with_echo: bool = True) -> tuple[FastAPI, Conversati
     conversations = build_conversations(spaces=StubActiveSpaces(live={_SPACE}))
     if with_echo:
         registry.register(_ECHO_METADATA, _EchoAgent)
+    if with_citing:
+        registry.register(_CITING_METADATA, _CitingAgent)
     orchestrator = AgentOrchestrator(
         OrchestratorDependencies(
             agents=registry,
@@ -378,6 +411,40 @@ def test_invoke_without_stream_returns_the_persisted_turn() -> None:
         ("user", "hello"),
         ("assistant", "hello"),
     ]
+
+
+def test_invoke_without_stream_returns_the_stored_citations() -> None:
+    """th-1 / AC-3.2: the collected reply carries the citations that history
+    returns for the same message."""
+    app, _ = _make_app_with_store(with_citing=True)
+    client = TestClient(app)
+
+    body = client.post(
+        "/api/v1/agents/citing/invoke",
+        headers=_auth(),
+        json={"space_id": _SPACE, "input": {"text": "what?"}},
+    ).json()
+
+    assert body["message"]["citations"] == _CITATIONS
+    assert set(body["message"]["content"]) == {"text", "attachments"}
+    listed = client.get(
+        f"/api/v1/conversations/{body['conversation_id']}/messages", headers=_auth()
+    ).json()["data"]
+    (stored,) = [m for m in listed if m["id"] == body["message"]["id"]]
+    assert stored["citations"] == body["message"]["citations"]
+
+
+def test_invoke_of_an_agent_without_citations_returns_null() -> None:
+    client = TestClient(_make_app())
+
+    body = client.post(
+        "/api/v1/agents/echo/invoke",
+        headers=_auth(),
+        json={"space_id": _SPACE, "input": {"text": "hello"}},
+    ).json()
+
+    assert "citations" in body["message"]
+    assert body["message"]["citations"] is None
 
 
 def test_invoke_continues_the_thread_it_is_given() -> None:

@@ -97,6 +97,7 @@ from app.framework.types import Uuid as UuidStr
 from app.modules.conversations.domain.entities import Conversation, Message, PinnedFile
 from app.modules.conversations.domain.value_objects import (
     AgentKey,
+    Citation,
     ConversationKind,
     MessageContent,
     MessageRole,
@@ -150,6 +151,11 @@ messages = Table(
     Column("seq", Integer, nullable=False),
     Column("created_at", _timestamptz, nullable=False),
     Column("deleted_at", _timestamptz, nullable=True),
+    # `migrations/versions/conversations/0007_message_citations.py` (th-1).
+    # none_as_null=True is LOAD-BEARING: plain JSONB() binds Python None as the
+    # JSON literal 'null', not SQL NULL, and "not recorded" must have exactly
+    # one spelling in the table: SQL NULL.
+    Column("citations", JSONB(none_as_null=True), nullable=True),
     schema="conversations",
 )
 
@@ -358,6 +364,7 @@ class SqlConversationRepository:
             seq=message.seq,
             created_at=message.created_at,
             deleted_at=message.deleted_at,
+            citations=_citations_to_json(message.citations),
         )
         # Unconditional bump (no WHERE version=:expected): the concurrency
         # guard for INV-CV1 is `UNIQUE(conversation_id, seq)` on the INSERT
@@ -620,6 +627,41 @@ def _content_to_json(content: MessageContent) -> Json:
     return {"text": content.text, "attachments": list(content.attachments)}
 
 
+def _citations_to_json(citations: tuple[Citation, ...] | None) -> list[Json] | None:
+    """th-1 -- None -> None (SQL NULL); () -> []; else the five keys per item, in order."""
+    if citations is None:
+        return None
+    return [
+        {
+            "document_id": c.document_id,
+            "file_name": c.file_name,
+            "page": c.page,
+            "chunk_id": c.chunk_id,
+            "rank": c.rank,
+        }
+        for c in citations
+    ]
+
+
+def _citations_from_json(raw: object) -> tuple[Citation, ...] | None:
+    """th-1 -- NULL -> None; a list -> tuple(Citation(...)), re-validated like
+    ``_hydrate_message`` rebuilds ``MessageContent`` rather than trusting it."""
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise TypeError("messages.citations must be a JSON array or NULL")
+    return tuple(
+        Citation(
+            document_id=item["document_id"],
+            file_name=item["file_name"],
+            page=item["page"],
+            chunk_id=item["chunk_id"],
+            rank=item["rank"],
+        )
+        for item in raw
+    )
+
+
 def _pending_to_json(options: tuple[str, ...]) -> list[str] | None:
     """ب-9 -- the pending candidates as the column holds them: a JSON array,
     or NULL when there is nothing pending.
@@ -693,6 +735,7 @@ def _hydrate_message(row: RowMapping) -> Message:
         seq=row["seq"],
         created_at=row["created_at"],
         deleted_at=row["deleted_at"],
+        citations=_citations_from_json(row["citations"]),
     )
 
 

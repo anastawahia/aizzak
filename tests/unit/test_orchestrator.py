@@ -54,7 +54,11 @@ from app.framework.observability.context import bind_turn
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.ports.llm_provider import LlmChunk, LlmMessage, LlmParams, LlmResult
 from app.framework.providers.resolver import ResolvedProvider
-from app.modules.conversations.ports.inbound import AppendedMessage, StartedConversation
+from app.modules.conversations.ports.inbound import (
+    AppendedMessage,
+    CitationRef,
+    StartedConversation,
+)
 from app.modules.usage.ports.inbound import LimitDecision, UsageCharge
 from tests.unit.support_access import build_authorization
 from tests.unit.support_log_lines import json_lines
@@ -1190,10 +1194,16 @@ class _FakeThreads:
         pinned_files: tuple[str, ...] = (),
         space: str | None = _THREAD_SPACE,
         pending: tuple[str, ...] = (),
+        drop_citations: bool = False,
     ) -> None:
         self.started: list[tuple[str, str]] = []
         self.spaces: list[str | None] = []
         self.appended: list[tuple[str, str, str, tuple[str, ...], int | None]] = []
+        # th-1 -- what each `append` was handed for `citations`, in call order,
+        # kept apart from `appended` so that tuple's shape stays what it was.
+        self.citations: list[tuple[CitationRef, ...] | None] = []
+        # True = behave like the module that DROPPED the citations it was sent.
+        self._drop_citations = drop_citations
         self.route_reads: list[str] = []
         self.scope_reads: list[str] = []
         # س-32 — every read of an EXISTING thread's space, recorded like the
@@ -1280,12 +1290,14 @@ class _FakeThreads:
         text: str,
         attachments: tuple[str, ...] = (),
         token_count: int | None = None,
+        citations: tuple[CitationRef, ...] | None = None,
     ) -> AppendedMessage:
         if self._known is not None and conversation_id != self._known:
             raise NotFoundError("conversation not found")
         if role == self._fail_on:
             raise ConflictError("write lost a race")
         self.appended.append((conversation_id, role, text, attachments, token_count))
+        self.citations.append(citations)
         self._seq += 1
         return AppendedMessage(
             id=f"msg-{self._seq}",
@@ -1296,6 +1308,7 @@ class _FakeThreads:
             token_count=token_count,
             seq=self._seq,
             created_at=utc_now(),
+            citations=None if self._drop_citations else citations,
         )
 
 
@@ -2822,3 +2835,224 @@ async def test_a_delivered_turn_settles_its_slot_with_the_charge_not_a_release()
     assert [rid for rid, _ in enforcement.committed] == enforcement.reserved
     assert [c.tokens for c in capture.charges] == [18]
     assert enforcement.outstanding == []
+
+
+# --------------------------------------------------------------------------- #
+# ث-1 — citations are saved with the assistant message, in the same append     #
+# --------------------------------------------------------------------------- #
+_DOC_1 = "0190aaaa-0000-7000-8000-000000000001"
+_CHUNK_1 = "0190bbbb-0000-7000-8000-000000000001"
+_CHUNK_2 = "0190bbbb-0000-7000-8000-000000000002"
+_CITED_NAME = "دليل الصيانة ٢٠٢٦.pdf"
+
+
+def _cite(chunk_id: str = _CHUNK_1, rank: int = 1, **extra: object) -> dict[str, object]:
+    item: dict[str, object] = {
+        "document_id": _DOC_1,
+        "file_name": _CITED_NAME,
+        "page": 12,
+        "chunk_id": chunk_id,
+        "rank": rank,
+    }
+    item.update(extra)
+    return item
+
+
+class _CitingAgent(BaseAgent):
+    """A RAG-shaped agent whose `final` carries whatever ``payload`` says."""
+
+    metadata = _metadata("citing", capabilities=frozenset())
+    payload: ClassVar[dict[str, object]] = {}
+
+    async def initialize(self) -> None:
+        return None
+
+    async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        yield AgentEvent(type="token", data={"delta": "the answer"})
+        yield AgentEvent(type="final", data={"text": "the answer", **type(self).payload})
+
+
+async def _cited_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, object],
+    *,
+    threads: _FakeThreads | None = None,
+) -> tuple[list[AgentEvent], _FakeThreads]:
+    monkeypatch.setattr(_CitingAgent, "payload", payload)
+    threads = threads or _FakeThreads(known="conv-1")
+    events = await _drive(_turn_orchestrator(_CitingAgent, threads), "citing")
+    return events, threads
+
+
+async def test_citations_reach_the_append_that_writes_the_reply_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    declared = [_cite(_CHUNK_1, 1), _cite(_CHUNK_2, 2, file_name=None, page=None)]
+
+    events, threads = await _cited_turn(monkeypatch, {"citations": declared})
+
+    assert threads.citations[-1] == (
+        CitationRef(_DOC_1, _CITED_NAME, 12, _CHUNK_1, 1),
+        CitationRef(_DOC_1, None, None, _CHUNK_2, 2),
+    )
+    assert [role for _c, role, *_ in threads.appended] == ["user", "assistant"]
+    # one append for the reply -- the citations did not need a second write
+    assert len(threads.citations) == 2
+    assert threads.citations[0] is None  # the user's own message carries none
+    # the frame is untouched (FR-10): same list as the agent sent, same content keys
+    final = events[-1]
+    assert final.data["citations"] == declared
+    assert set(final.data["content"]) == {"text", "attachments"}
+
+
+async def test_an_empty_citation_list_is_passed_as_empty_not_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _events, threads = await _cited_turn(monkeypatch, {"citations": []})
+
+    assert threads.citations[-1] == ()
+
+
+async def test_an_agent_that_emits_no_citations_key_records_none() -> None:
+    threads = _FakeThreads(known="conv-1")
+
+    await _drive(_turn_orchestrator(_JobAgent, threads), "job")
+
+    assert threads.citations == [None, None]
+
+
+async def test_a_null_citations_value_records_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    _events, threads = await _cited_turn(monkeypatch, {"citations": None})
+
+    assert threads.citations[-1] is None
+
+
+@pytest.mark.parametrize(
+    ("declared", "count"),
+    [
+        ("x", 0),
+        ([_cite(), {"document_id": _DOC_1, "file_name": "a", "page": 1, "rank": 2}], 2),
+        ([_cite(rank="1")], 1),
+        ([_cite(page=True)], 1),
+        ([_cite(), "not-a-dict"], 2),
+        ([_cite(file_name=5)], 1),
+    ],
+)
+async def test_a_malformed_list_stores_none_keeps_the_turn_and_warns_once(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    declared: object,
+    count: int,
+) -> None:
+    caplog.set_level("WARNING", logger="app.agents.orchestrator")
+
+    events, threads = await _cited_turn(monkeypatch, {"citations": declared})
+
+    assert events[-1].type == "final"
+    assert events[-1].data["message_id"]  # the reply was saved
+    assert _assistant_messages(threads) == ["the answer"]
+    assert threads.citations[-1] is None
+    (record,) = [r for r in caplog.records if r.message == "orchestrator.citations_not_recorded"]
+    assert record.count == count  # type: ignore[attr-defined]
+    assert record.reason == "shape"  # type: ignore[attr-defined]
+    assert _CITED_NAME not in caplog.text
+    assert "the answer" not in caplog.text
+
+
+async def test_unknown_item_keys_are_dropped_and_the_frame_keeps_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events, threads = await _cited_turn(
+        monkeypatch, {"citations": [_cite(score=0.91, snippet="secret")]}
+    )
+
+    assert threads.citations[-1] == (CitationRef(_DOC_1, _CITED_NAME, 12, _CHUNK_1, 1),)
+    assert events[-1].data["citations"][0]["score"] == 0.91
+
+
+async def test_citations_the_module_dropped_warn_once_with_the_count_only(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("WARNING", logger="app.agents.orchestrator")
+    threads = _FakeThreads(known="conv-1", drop_citations=True)
+
+    events, _ = await _cited_turn(
+        monkeypatch, {"citations": [_cite(_CHUNK_1, 1), _cite(_CHUNK_2, 2)]}, threads=threads
+    )
+
+    assert events[-1].data["message_id"]
+    (record,) = [r for r in caplog.records if r.message == "orchestrator.citations_not_recorded"]
+    assert record.count == 2  # type: ignore[attr-defined]
+    assert record.reason == "rejected"  # type: ignore[attr-defined]
+    assert _CITED_NAME not in caplog.text
+
+
+async def test_value_rules_are_the_modules_so_more_than_fifty_are_handed_over(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    declared = [_cite(rank=i + 1) for i in range(51)]
+
+    _events, threads = await _cited_turn(monkeypatch, {"citations": declared})
+
+    handed = threads.citations[-1]
+    assert handed is not None
+    assert len(handed) == 51
+
+
+async def test_a_fallback_turn_keeps_its_citations_and_still_gets_the_notice_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fallback = {"from": {"provider": "openai"}, "to": {"provider": "ollama"}}
+
+    events, threads = await _cited_turn(monkeypatch, {"citations": [_cite()], "fallback": fallback})
+
+    assert threads.citations[-1] == (CitationRef(_DOC_1, _CITED_NAME, 12, _CHUNK_1, 1),)
+    assert events[-1].data["fallback"] == fallback
+
+
+async def test_a_cut_off_reply_records_no_citations() -> None:
+    threads = _FakeThreads(known="conv-1")
+
+    await _drive(_cut_orchestrator(_CutOffAgent, threads), "cutoff")
+
+    assert _assistant_messages(threads)  # the partial was saved
+    assert threads.citations[-1] is None
+
+
+async def test_a_failed_turn_after_tokens_records_no_citations() -> None:
+    threads = _FakeThreads(known="conv-1")
+
+    await _drive(_turn_orchestrator(_HalfAnswerThenFailAgent, threads), "half-boom")
+
+    assert threads.citations[-1] is None
+
+
+async def test_citations_are_saved_before_the_final_frame_is_delivered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client that disconnects right after `final` must still find them stored:
+    the write precedes the yield."""
+    monkeypatch.setattr(_CitingAgent, "payload", {"citations": [_cite()]})
+    threads = _FakeThreads(known="conv-1")
+    stream = await _turn_orchestrator(_CitingAgent, threads).invoke(
+        _ctx(), "citing", AgentRequest(conversation_id="conv-1", input={"text": "hi"})
+    )
+
+    async for event in stream:
+        if event.type == "final":
+            break
+    await stream.aclose()
+
+    assert threads.citations[-1] == (CitationRef(_DOC_1, _CITED_NAME, 12, _CHUNK_1, 1),)
+
+
+async def test_a_failed_reply_write_delivers_final_without_message_id_and_does_not_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    threads = _FakeThreads(known="conv-1", fail_on="assistant")
+
+    events, _ = await _cited_turn(monkeypatch, {"citations": [_cite()]}, threads=threads)
+
+    assert [e.type for e in events][-1] == "final"
+    assert "message_id" not in events[-1].data
+    assert events[-1].data["citations"] == [_cite()]

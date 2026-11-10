@@ -27,8 +27,11 @@ resolved — the whole conversation path is exercised without a provider.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
+from typing import ClassVar
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -99,6 +102,43 @@ class _EchoAgent(BaseAgent):
         yield AgentEvent(type="final", data={"text": f"echo: {payload}"})
 
 
+_CITING_METADATA = AgentMetadata(
+    key="citing",
+    name="Citing",
+    version="1.0.0",
+    description="Answers and lists its sources (th-1).",
+    capabilities=frozenset(),
+    required_permissions=frozenset({"agents:invoke"}),
+)
+
+_DOC = "0190aaaa-0000-7000-8000-000000000001"
+_CHUNK_1 = "0190bbbb-0000-7000-8000-000000000001"
+_CHUNK_2 = "0190bbbb-0000-7000-8000-000000000002"
+_ARABIC_NAME = "دليل الصيانة ٢٠٢٦.pdf"
+_TWO_CITATIONS: list[dict[str, object]] = [
+    {"document_id": _DOC, "file_name": _ARABIC_NAME, "page": 12, "chunk_id": _CHUNK_1, "rank": 1},
+    {"document_id": _DOC, "file_name": None, "page": None, "chunk_id": _CHUNK_2, "rank": 2},
+]
+
+
+class _CitingAgent(BaseAgent):
+    """A RAG-shaped agent: its `final` carries ``payload`` beside the text."""
+
+    metadata = _CITING_METADATA
+    # `None` = leave the key off entirely.
+    citations: ClassVar[list[dict[str, object]] | None] = None
+
+    async def initialize(self) -> None:
+        return None
+
+    async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        yield AgentEvent(type="token", data={"delta": "the answer"})
+        data: dict[str, object] = {"text": "the answer"}
+        if type(self).citations is not None:
+            data["citations"] = type(self).citations
+        yield AgentEvent(type="final", data=data)
+
+
 class _FakeLLM:
     provider = "fake"
 
@@ -139,6 +179,7 @@ def _make_app() -> tuple[FastAPI, ConversationsStack]:
     was actually persisted, which is the whole point of 6.1-ج-3."""
     registry = InMemoryAgentRegistry()
     registry.register(_ECHO_METADATA, _EchoAgent)
+    registry.register(_CITING_METADATA, _CitingAgent)
     conversations = build_conversations(spaces=StubActiveSpaces(live={_SPACE}))
     orchestrator = AgentOrchestrator(
         OrchestratorDependencies(
@@ -1029,3 +1070,228 @@ def test_an_unpinned_thread_reads_as_an_empty_scope_which_means_unscoped() -> No
     # And an unknown thread degrades the same way rather than raising: the
     # read-ahead must not take over the reporting the write does properly.
     assert asyncio.run(stack.service.pinned_files(_scope_ctx(), "nope")) == ()
+
+
+# --------------------------------------------------------------------------- #
+# ث-1 — citations stored with the assistant message and returned               #
+# --------------------------------------------------------------------------- #
+def _ask(client: TestClient, conversation_id: str, *, stream: bool = False) -> object:
+    return client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        headers=_auth(),
+        json={"content": {"text": "what does the manual say?"}, "stream": stream},
+    )
+
+
+def _messages(client: TestClient, conversation_id: str, query: str = "") -> dict[str, object]:
+    response = client.get(
+        f"/api/v1/conversations/{conversation_id}/messages{query}", headers=_auth()
+    )
+    assert response.status_code == 200
+    body: dict[str, object] = response.json()
+    return body
+
+
+def _final_frame(sse_text: str) -> dict[str, object]:
+    lines = sse_text.splitlines()
+    index = lines.index("event: final")
+    frame: dict[str, object] = json.loads(lines[index + 1].removeprefix("data: "))
+    return frame
+
+
+def test_a_streamed_answer_returns_the_same_citations_in_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_CitingAgent, "citations", _TWO_CITATIONS)
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client, agent_key="citing")
+
+    response = _ask(client, conversation_id, stream=True)
+
+    final = _final_frame(response.text)  # type: ignore[attr-defined]
+    listed = _messages(client, conversation_id)["data"]
+    (assistant,) = [m for m in listed if m["role"] == "assistant"]  # type: ignore[attr-defined]
+    assert assistant["id"] == final["message_id"]
+    assert assistant["citations"] == final["citations"] == _TWO_CITATIONS
+
+
+def test_the_arabic_file_name_is_sent_as_utf8_not_escaped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_CitingAgent, "citations", _TWO_CITATIONS)
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client, agent_key="citing")
+    _ask(client, conversation_id)
+
+    response = client.get(f"/api/v1/conversations/{conversation_id}/messages", headers=_auth())
+
+    assert _ARABIC_NAME.encode("utf-8") in response.content
+    assert b"\\u" not in response.content
+
+
+def test_the_user_message_has_the_citations_key_with_null(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_CitingAgent, "citations", _TWO_CITATIONS)
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client, agent_key="citing")
+    _ask(client, conversation_id)
+
+    user, assistant = _messages(client, conversation_id)["data"]  # type: ignore[misc]
+
+    assert "citations" in user
+    assert user["citations"] is None
+    assert assistant["citations"] == _TWO_CITATIONS
+
+
+def test_content_stays_text_and_attachments_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_CitingAgent, "citations", _TWO_CITATIONS)
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client, agent_key="citing")
+    reply = _ask(client, conversation_id).json()  # type: ignore[attr-defined]
+
+    assert set(reply["content"]) == {"text", "attachments"}
+    for message in _messages(client, conversation_id)["data"]:  # type: ignore[attr-defined]
+        assert set(message["content"]) == {"text", "attachments"}
+
+
+def test_a_client_sent_content_citations_key_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_CitingAgent, "citations", None)
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client, agent_key="citing")
+
+    client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        headers=_auth(),
+        json={"content": {"text": "hi", "citations": _TWO_CITATIONS}},
+    )
+
+    user, assistant = _messages(client, conversation_id)["data"]  # type: ignore[misc]
+    assert user["citations"] is None
+    assert user["content"] == {"text": "hi", "attachments": []}
+    assert assistant["citations"] is None
+
+
+def test_each_message_keeps_its_own_citations_across_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client, agent_key="citing")
+    first = [_TWO_CITATIONS[0]]
+    for payload in (first, [], None):
+        monkeypatch.setattr(_CitingAgent, "citations", payload)
+        _ask(client, conversation_id)
+
+    seen: list[object] = []
+    cursor = ""
+    while True:
+        page = _messages(client, conversation_id, f"?limit=1{cursor}")
+        seen.extend(m["citations"] for m in page["data"])  # type: ignore[attr-defined]
+        next_cursor = page["meta"]["next_cursor"]  # type: ignore[index]
+        if next_cursor is None:
+            break
+        cursor = f"&cursor={next_cursor}"
+
+    assert seen == [None, first, None, [], None, None]
+
+
+def test_a_non_streamed_reply_has_the_same_citations_as_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_CitingAgent, "citations", _TWO_CITATIONS)
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client, agent_key="citing")
+
+    reply = _ask(client, conversation_id).json()  # type: ignore[attr-defined]
+
+    assert reply["citations"] == _TWO_CITATIONS
+    listed = _messages(client, conversation_id)["data"]
+    (stored,) = [m for m in listed if m["id"] == reply["id"]]  # type: ignore[attr-defined]
+    assert stored["citations"] == reply["citations"]
+
+
+def test_an_agent_without_citations_replies_with_null() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client)
+
+    reply = _ask(client, conversation_id).json()  # type: ignore[attr-defined]
+
+    assert "citations" in reply
+    assert reply["citations"] is None
+
+
+def test_an_agent_that_states_no_sources_replies_with_an_empty_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_CitingAgent, "citations", [])
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client, agent_key="citing")
+
+    reply = _ask(client, conversation_id).json()  # type: ignore[attr-defined]
+
+    assert reply["citations"] == []
+
+
+def test_a_malformed_citation_list_never_fails_the_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bad = [{**_TWO_CITATIONS[0], "chunk_id": "chunk-a"}]  # not a UUID: a value rule
+    monkeypatch.setattr(_CitingAgent, "citations", bad)
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client, agent_key="citing")
+
+    response = _ask(client, conversation_id)
+
+    assert response.status_code == 200  # type: ignore[attr-defined]
+    assert response.json()["content"]["text"] == "the answer"  # type: ignore[attr-defined]
+    assert response.json()["citations"] is None  # type: ignore[attr-defined]
+
+
+def test_a_deleted_assistant_message_leaves_history_with_its_citations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_CitingAgent, "citations", _TWO_CITATIONS)
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client, agent_key="citing")
+    reply = _ask(client, conversation_id).json()  # type: ignore[attr-defined]
+
+    deleted = client.delete(
+        f"/api/v1/conversations/{conversation_id}/messages/{reply['id']}", headers=_auth()
+    )
+
+    assert deleted.status_code == 204
+    ids = [m["id"] for m in _messages(client, conversation_id)["data"]]  # type: ignore[attr-defined]
+    assert reply["id"] not in ids
+
+
+def test_an_unknown_thread_is_a_404_problem_without_citations() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+
+    response = client.get("/api/v1/conversations/missing/messages", headers=_auth())
+
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)
+    assert "citations" not in response.json()
+
+
+def test_a_bad_token_is_401_on_the_messages_route() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+
+    response = client.get("/api/v1/conversations/x/messages", headers=_auth("bad"))
+
+    assert response.status_code == 401
