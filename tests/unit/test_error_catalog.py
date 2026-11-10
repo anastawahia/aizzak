@@ -80,7 +80,8 @@ _HIERARCHY = (
 # Every ``code=`` in the source that is not a literal, as (module, expression).
 # Each one is bounded: the first two echo or map, the third picks between two
 # literals that both live in the same file (so the backward scan still sees
-# them). Adding a fourth is a decision, and this test makes you take it.
+# them); the fourth (th-3) echoes a stored code. Adding a fifth is a decision,
+# and this test makes you take it.
 _DYNAMIC_CODE_SITES = {
     # Echoes the code out of a B1 event this process produced, so the
     # non-streaming path answers the problem the stream would have shown.
@@ -90,6 +91,11 @@ _DYNAMIC_CODE_SITES = {
     ("agents/orchestrator.py", "_DENIAL_CODES.get(reason, 'common.rate_limited')"),
     # One of two literals, chosen by which domain rule the URL broke.
     ("modules/integrations/application/use_cases.py", "code"),
+    # th-3: an Idempotency-Key replay answers with the code the FIRST attempt was
+    # given, stored in the turn handle from a B1 event this platform produced
+    # (the orchestrator echo above), so it is always a catalogued code; an
+    # absent one falls back to the catalogued `agent.failed`.
+    ("api/v1/idempotent_turn.py", "handle.code or _AGENT_FAILED"),
 }
 
 
@@ -216,7 +222,7 @@ def test_the_deleted_entries_stay_deleted() -> None:
 
 
 def test_only_the_known_sites_choose_a_code_dynamically() -> None:
-    """The loophole, held open exactly three fingers wide."""
+    """The loophole, held open exactly four fingers wide."""
     _emitted, dynamic, _literals = _scan()
 
     assert dynamic == _DYNAMIC_CODE_SITES

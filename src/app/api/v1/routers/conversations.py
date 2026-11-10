@@ -46,7 +46,7 @@ from fastapi import APIRouter, Depends, Request
 from starlette.responses import StreamingResponse
 
 from app.api.middleware.rbac import require
-from app.api.v1.dependencies import Context, Services, current_principal
+from app.api.v1.dependencies import ApiServices, Context, Services, current_principal
 from app.api.v1.dto.conversations import (
     Citation,
     ConversationCreateIn,
@@ -60,9 +60,18 @@ from app.api.v1.dto.conversations import (
     MessageOut,
 )
 from app.api.v1.dto.pagination import DEFAULT_LIMIT, Cursor, Limit, Page, PageMeta
-from app.api.v1.idempotency import IdempotencyKey, idempotent
+from app.api.v1.idempotency import IdempotencyKey, guard_key, idempotent
+from app.api.v1.idempotent_turn import (
+    IdempotentTurnLedger,
+    TurnHandle,
+    claim_turn,
+    replay_error,
+    replay_events,
+    stale_after_s,
+)
 from app.api.v1.sse import SSE_HEADERS, SSE_MEDIA_TYPE, sse_stream
 from app.framework.agent_runtime.base_agent import AgentRequest
+from app.framework.context.execution_context import ExecutionContext
 from app.modules.access.domain.value_objects import Permission
 from app.modules.conversations.domain.entities import Conversation, Message, PinnedFile
 from app.modules.conversations.domain.value_objects import MessageFallback as DomainFallback
@@ -134,6 +143,7 @@ def _to_message_out(message: Message) -> MessageOut:
         citations=_citations_out(message.citations),
         status=_status_out(None if message.status is None else message.status.value),
         fallback=_fallback_out(message.fallback),
+        reply_to=message.reply_to,
         token_count=message.token_count,
         seq=message.seq,
         created_at=message.created_at,
@@ -163,6 +173,7 @@ def appended_to_message_out(message: AppendedMessage) -> MessageOut:
         citations=_citations_out(message.citations),
         status=_status_out(message.status),
         fallback=_fallback_out(message.fallback),
+        reply_to=message.reply_to,
         token_count=message.token_count,
         seq=message.seq,
         created_at=message.created_at,
@@ -363,6 +374,7 @@ async def post_message(
     request: Request,
     services: Services,
     ctx: Context,
+    idempotency_key: IdempotencyKey = None,
 ) -> MessageOut | StreamingResponse:
     """Post a turn and run the thread's agent on it (`03 §1`, ``postMessage``).
 
@@ -376,19 +388,89 @@ async def post_message(
     ``response_model=None`` because the two answers are genuinely different
     types (a JSON body vs. an open stream); FastAPI cannot infer one model for
     both, and pretending otherwise would document a lie.
+
+    **``Idempotency-Key`` (th-3)** makes a retry after an ambiguous send safe:
+    a repeat after the turn ended stores no second question, runs no agent and
+    bills nothing -- it answers with the SAME outcome (``idempotent_turn.py``
+    has the state machine). A key that is malformed is refused before any read
+    (422); an unknown conversation is a 404 before the key store is touched; and
+    a failure before the question was stored frees the key, while a failure
+    after it does not.
     """
+    if idempotency_key is not None:
+        guard_key(idempotency_key)
     conversation = await services.conversations.get.execute(ctx, conversation_id)
     req = AgentRequest(conversation_id=conversation_id, input=body.content, stream=body.stream)
     agent_key = conversation.agent_key.value
-    if wants_sse(request, body.stream):
-        events = await services.orchestrator.invoke(ctx, agent_key, req)
+    sse = wants_sse(request, body.stream)
+    if idempotency_key is None:
+        return await _run_turn(services, ctx, agent_key, req, sse=sse, ledger=None)
+    claim = await claim_turn(
+        services.idempotency,
+        ctx,
+        conversation_id=conversation.id,
+        key=idempotency_key,
+        content=body.content,
+        stale_after_s=stale_after_s(services.settings),
+    )
+    if isinstance(claim, TurnHandle):
+        return await _replay_turn(services, ctx, claim, sse=sse)
+    try:
+        return await _run_turn(services, ctx, agent_key, req, sse=sse, ledger=claim)
+    except BaseException:
+        await claim.release_unless_accepted()
+        raise
+
+
+async def _run_turn(
+    services: ApiServices,
+    ctx: ExecutionContext,
+    agent_key: str,
+    req: AgentRequest,
+    *,
+    sse: bool,
+    ledger: IdempotentTurnLedger | None,
+) -> MessageOut | StreamingResponse:
+    """Today's two branches, with the key's ledger passed through. When the SSE
+    turn stored no question (the conversations seam is unwired) there is nothing
+    for the key to protect, so it is freed at once rather than left claimed."""
+    if sse:
+        events = await services.orchestrator.invoke(ctx, agent_key, req, ledger=ledger)
+        if ledger is not None:
+            await ledger.release_unless_accepted()
         return StreamingResponse(
             sse_stream(events, correlation_id=ctx.correlation_id),
             media_type=SSE_MEDIA_TYPE,
             headers=SSE_HEADERS,
         )
-    turn = await services.orchestrator.invoke_once(ctx, agent_key, req)
+    turn = await services.orchestrator.invoke_once(ctx, agent_key, req, ledger=ledger)
     return appended_to_message_out(turn.message)
+
+
+async def _replay_turn(
+    services: ApiServices, ctx: ExecutionContext, handle: TurnHandle, *, sse: bool
+) -> MessageOut | StreamingResponse:
+    """Answer a repeat of a key whose turn already has an outcome.
+
+    A replied turn is read back from the stored message AS IT IS NOW (a message
+    the user deleted since is a 404: a replay never hands back removed text); a
+    failed one is rebuilt from the stored code, status and ids. The delivery
+    follows THIS request's ``stream``/``Accept``, not the first attempt's."""
+    reply: MessageOut | None = None
+    if handle.outcome == "replied" and handle.message_id is not None:
+        message = await services.conversations.get_message.execute(
+            ctx, handle.conversation_id, handle.message_id
+        )
+        reply = _to_message_out(message)
+    if sse:
+        return StreamingResponse(
+            sse_stream(replay_events(handle, reply), correlation_id=ctx.correlation_id),
+            media_type=SSE_MEDIA_TYPE,
+            headers=SSE_HEADERS,
+        )
+    if reply is not None:
+        return reply
+    raise replay_error(handle)
 
 
 @router.delete(

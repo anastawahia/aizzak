@@ -135,6 +135,9 @@ class MessageOut(BaseModel):
     # th-2 -- required-present, no default: both keys are always on the wire.
     status: Literal["complete", "partial"] | None
     fallback: MessageFallback | None
+    # th-3 -- required-present, no default: the key is always on the wire (the
+    # id of the user message this assistant message answers, or null).
+    reply_to: str | None
     token_count: int | None
     seq: int
     created_at: datetime
@@ -147,6 +150,9 @@ class MessageCreateIn(BaseModel):
     ``content`` is passed to the agent verbatim as its request ``input`` AND
     persisted as the user's message, which is why there is no separate
     ``input`` field: one payload, one turn, no way for the two to disagree.
+
+    The ``Idempotency-Key`` header (th-3) is not a body field: the request is
+    identified by ``content`` alone, so ``stream`` may differ on a retry.
     """
 
     content: dict[str, Any]
