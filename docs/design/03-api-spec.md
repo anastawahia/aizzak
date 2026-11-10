@@ -102,8 +102,17 @@ class ConversationPatchIn(BaseModel): title: str | None
 # **مفتاح توجيه** من `ModelOut.capability` لا اسم موديل (D‑16/FR‑73): يُتحقَّق منه مقابل الجدول
 # الحيّ (مجهول ⇒ 422)، و`null` يفكّ التثبيت. مزوّدٌ بلا مفتاح **يُقبَل**: الإتاحة صفةُ اللحظة لا صفةُ المسار.
 class ConversationModelIn(BaseModel): route: str | None
+# ث‑1 — `citations` حقلٌ مستقلّ بجانب `content` (الذي يبقى `{text, attachments}` بالضبط)، **حاضرُ المفتاح دائماً**:
+# `null` = لم يُسجَّل شيء (رسائل المستخدم، الرسائل المحفوظة قبل الحقل، وكيلٌ لا يُصدر استشهادات، الأجوبة المقطوعة،
+# مخرجات خطوات الـworkflow، أو قائمةٌ تالفة أُسقطت)، و`[]` = صرّح الوكيل بأن لا مصادر. لقطةٌ وقت الجواب:
+# إعادة تسمية الملف أو حذفه لاحقاً لا تغيّرها. السقف 50 استشهاداً. تُرجَع في ثلاثة مواضع بالقيمة نفسها:
+# `GET …/messages`، والردّ غير المتدفّق لـ`POST …/messages`، و`AgentInvokeOut.message` — وتساوي `final.citations`
+# لذلك الدور (إطار `final` نفسه لا يتغيّر).
+class Citation(BaseModel):
+    document_id: str; file_name: str | None; page: int | None; chunk_id: str; rank: int   # rank ≥ 1 كما صدر، بلا إعادة ترتيب
 class MessageOut(BaseModel):
-    id: str; role: str; content: dict[str, Any]; token_count: int | None; seq: int; created_at: datetime
+    id: str; role: str; content: dict[str, Any]; citations: list[Citation] | None
+    token_count: int | None; seq: int; created_at: datetime
 class MessageCreateIn(BaseModel):
     content: dict[str, Any]; stream: bool = False        # يشغّل الوكيل ويعيد ردّه
 # DELETE /conversations/{id}/messages/{message_id} — حذفٌ ناعم لدورٍ واحد: يخرج من كلّ قراءة
@@ -379,6 +388,7 @@ data: {"type":"https://errors.platform/agent.failed","title":"Agent failed","sta
   ]
   ```
   `document_id` و`chunk_id` حاضران دائماً؛ `file_name`/`page` **يُعادان دائماً بالمفتاح** ويُصبحان `null` صراحة حين لا يحملهما الشذر المسترجَع نفسه (نقطة سبقت هذا الحقل، أو محلِّلٌ لم يُصدره) — نفس عُرف `RetrievedChunkOut` أعلاه، لا مفتاحٌ يُحذَف.
+  **(ث‑1) هذه القائمة نفسها تُحفظ الآن مع رسالة المساعد** وتُعاد في `MessageOut.citations` (§2) بالقيمة والترتيب نفسيهما، فمن يعيد فتح المحادثة يرى مصادر كل جواب دون أن يكون قد التقط `final`. تبقى على `final` بلا تغيير. الفرق الوحيد المقصود: ما يُحفظ هو المفاتيح الخمسة فقط؛ وقائمةٌ تالفة الشكل أو القيم (أو أكثر من 50) تُحفظ `null` ولا يفشل الدور.
   و`rank` (خطّة السيناريوهات §٨، ب‑١٢، الفجوة ف‑١٢) **رتبةُ المصدر، مبدوءةً بـ١** — عددٌ يقرؤه إنسان لا فهرسٌ يفكّه برنامج. القائمةُ تصل مرتّبةً تنازليّاً بالصلة أصلاً ولا يعيد الوكيلُ ترتيبَها (مُثبَّتٌ باختبار)، فالحقلُ **لا يغيّر ترتيباً**؛ ما يغيّره أنّ الترتيبَ يكفّ عن أن يكون الموضعَ الوحيدَ الذي يسكنه المعنى: مَن أراد تمييزَ المصدر الأوّل بصريّاً يقرأ رقماً بدل أن يثق بأنّ التسلسلَ نجا من التسلسل والتخزين وإعادةِ العرض ومكوّنِ القائمة عنده. ⚠️ وما **لا** يقوله هذا الحقل: أيَّ المصادر استعمل النموذجُ فعلاً — ذلك لا يُعرف إلّا بسؤاله، ونموذجٌ يُسأل يُجيب بقائمةٍ واثقةٍ على أيّ حال، فتُلبَس التلفيقَ هيئةَ الاستشهاد.
 
 ### 3.2 WebSocket — التفاعلي `GET /api/v1/ws`
