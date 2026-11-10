@@ -434,6 +434,32 @@ def test_invoke_without_stream_returns_the_stored_citations() -> None:
     assert stored["citations"] == body["message"]["citations"]
 
 
+def test_invoke_without_stream_returns_the_stored_status_and_fallback() -> None:
+    """th-2 / AC-4.2: the collected reply carries the status and fallback that
+    history returns for the same message."""
+    app, _ = _make_app_with_store()
+    client = TestClient(app)
+
+    body = client.post(
+        "/api/v1/agents/echo/invoke",
+        headers=_auth(),
+        json={"space_id": _SPACE, "input": {"text": "hello"}},
+    ).json()
+
+    assert body["message"]["status"] == "complete"
+    assert "fallback" in body["message"]
+    assert body["message"]["fallback"] is None
+    assert set(body["message"]["content"]) == {"text", "attachments"}
+    listed = client.get(
+        f"/api/v1/conversations/{body['conversation_id']}/messages", headers=_auth()
+    ).json()["data"]
+    (stored,) = [m for m in listed if m["id"] == body["message"]["id"]]
+    assert (stored["status"], stored["fallback"]) == (
+        body["message"]["status"],
+        body["message"]["fallback"],
+    )
+
+
 def test_invoke_of_an_agent_without_citations_returns_null() -> None:
     client = TestClient(_make_app())
 

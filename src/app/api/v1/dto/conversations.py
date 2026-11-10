@@ -18,7 +18,7 @@ rendered from the domain's ``MessageContent`` as ``{"text", "attachments"}``
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -108,6 +108,22 @@ class Citation(BaseModel):
     rank: int
 
 
+class ProviderModel(BaseModel):
+    """One side of a 6.4 fallback (th-2): route-level names, no credential."""
+
+    provider: str
+    model: str
+
+
+class MessageFallback(BaseModel):
+    """``final.fallback``'s shape, stored with the message (th-2). The wire key
+    is ``from``, a Python keyword, hence the alias; build it with
+    ``model_validate({"from": ..., "to": ...})`` (pydantic.mypy is on)."""
+
+    from_: ProviderModel = Field(alias="from")
+    to: ProviderModel
+
+
 class MessageOut(BaseModel):
     """One message within a thread."""
 
@@ -116,6 +132,9 @@ class MessageOut(BaseModel):
     content: dict[str, Any]
     # required-present, no default: the key is always on the wire (list or null)
     citations: list[Citation] | None
+    # th-2 -- required-present, no default: both keys are always on the wire.
+    status: Literal["complete", "partial"] | None
+    fallback: MessageFallback | None
     token_count: int | None
     seq: int
     created_at: datetime
