@@ -15,10 +15,10 @@
 | 2 | بوابة ① النطاق | بشري | ✅ | | موافقة 2026‑11‑10، انظر القرارات |
 | 3 | UX | ux-designer | ⏭ | | خلفية فقط، لا واجهة في هذا المستودع |
 | 4 | التصميم | software-architect | ✅ | design.md | لا بنود ⚠️. ترحيل إضافي `0007_message_citations` |
-| 5 | البيانات | data-engineer | 🟡 | ترحيل | لا يُطبَّق على الـ stack الحي (ق‑4)؛ التحقق الحي في CI |
-| 6 | الخلفية | backend-developer | ⏸ | commits | |
+| 5 | البيانات | data-engineer | ✅ | `fc410bd` | الترحيل `0007` + `01 §2.4`. البوابات خضراء. اختبارات parity وRLS في patch (`scratchpad/citations-tests.patch`) تُحفظ مع عمود الـ ORM في مرحلة الخلفية. التحقق الحي ذهاباً وإياباً في CI (ق‑4) |
+| 6 | الخلفية | backend-developer | ✅ | `dbec7e2`، `bfb70a1` | البوابات 1–5 خضراء (pytest exit 0)، `test-rules.sh` OK (شغّله المنسّق). انحرافات: AC‑1.8 مغطى جزئياً، AC‑5.3 بلا اختبار 403 صريح، إصلاح صغير في اختبار parity |
 | 7 | الواجهة | frontend-developer | ⏭ | | لا واجهة في هذا المستودع |
-| 8 | الجودة | qa-engineer | ⏸ | test-plan.md + اختبارات | |
+| 8 | الجودة | qa-engineer | 🟡 | test-plan.md + اختبارات | |
 | 9 | مراجعة الشيفرة | code-reviewer | ⏸ | review.md | |
 | 10 | المراجعة الأمنية | security-reviewer | ⏸ | security-review.md | |
 | 11 | القبول | product-owner | ⏸ | acceptance.md | |
