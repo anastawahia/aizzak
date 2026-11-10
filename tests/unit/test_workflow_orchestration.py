@@ -177,6 +177,8 @@ class _FakeThreads:
         self.citations: list[tuple[CitationRef, ...] | None] = []
         # th-2 -- `status` / `fallback` of each `append`, in lists of their own.
         self.statuses: list[str | None] = []
+        # th-3 -- `reply_to` of each `append`, in call order.
+        self.reply_tos: list[str | None] = []
         self.fallbacks: list[FallbackRef | None] = []
         self._raises = raises
         self._append_raises = append_raises
@@ -210,6 +212,7 @@ class _FakeThreads:
         citations: tuple[CitationRef, ...] | None = None,
         status: str | None = None,
         fallback: FallbackRef | None = None,
+        reply_to: str | None = None,
     ) -> AppendedMessage:
         if self._append_raises is not None and self._fail_role in (None, role):
             raise self._append_raises
@@ -217,6 +220,7 @@ class _FakeThreads:
         self.citations.append(citations)
         self.statuses.append(status)
         self.fallbacks.append(fallback)
+        self.reply_tos.append(reply_to)
         self._seq += 1
         return AppendedMessage(
             id=f"msg-{self._seq}",
@@ -230,6 +234,7 @@ class _FakeThreads:
             citations=citations,
             status=status,
             fallback=fallback,
+            reply_to=reply_to,
         )
 
 
@@ -579,6 +584,8 @@ async def test_a_completed_step_output_is_stored_complete_with_no_fallback() -> 
     await _drain(run)
 
     assert threads.statuses == [None, "complete", "complete"]
+    # th-3 (A-5): a workflow step's output records no question.
+    assert threads.reply_tos == [None, None, None]
     assert threads.fallbacks == [None, None, None]
 
 

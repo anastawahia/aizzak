@@ -59,6 +59,7 @@ import json
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from typing import Protocol
 
 from app.framework.agent_runtime.base_agent import (
     AgentDependencies,
@@ -1311,6 +1312,56 @@ class WorkflowRun:
         return self.result
 
 
+# th-3 -- the first frame of a single-agent stream, and the reconciliation ids.
+_ACCEPTED_EVENT = "accepted"
+_USER_MESSAGE_ID_KEY = "user_message_id"
+_MESSAGE_ID_KEY = "message_id"
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedTurn:
+    """The user message a single-agent turn stored (th-3) -- ids and seq, no text."""
+
+    conversation_id: Uuid
+    user_message_id: Uuid
+    seq: int
+
+
+@dataclass(frozen=True, slots=True)
+class TurnOutcome:
+    """How one ACCEPTED turn ended (th-3). Ids, codes and counts, never text.
+
+    replied=True  <=> ``final`` was reached AND ``_persist_reply`` stored it;
+                      message_id is that complete message, usage is filled.
+    replied=False <=> any other ending; message_id is the saved PARTIAL or None;
+                      code/status are the problem the caller was given
+                      (agent.failed/502 for a reader who left and for a
+                      ``final`` whose write failed).
+    """
+
+    accepted: AcceptedTurn
+    replied: bool
+    message_id: Uuid | None
+    code: str | None = None
+    status: int | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+
+
+class TurnLedger(Protocol):
+    """A caller that wants to hear how one turn went (th-3: the Idempotency-Key
+    ledger of ``POST .../messages``). The orchestrator calls ``accepted`` once,
+    right after the user message is stored (still pre-flight), and ``settled``
+    at most once, BEFORE the terminal frame is yielded -- or from the
+    ``finally`` when the reader left. A raise from either is logged and
+    swallowed: the ledger annotates the turn, it never fails it. The
+    orchestrator knows nothing about the Idempotency-Key itself."""
+
+    async def accepted(self, turn: AcceptedTurn) -> None: ...
+
+    async def settled(self, outcome: TurnOutcome) -> None: ...
+
+
 @dataclass(slots=True)
 class _TurnRecord:
     """The mutable bookkeeping of ONE single-agent turn.
@@ -1345,6 +1396,11 @@ class _TurnRecord:
     # stream (the `notice` frame and the `final` key), the reply write (the
     # stored sentence) and the capture (which provider served).
     fallback: _Fallback | None = None
+    # th-3 -- the user message `_open_turn` stored (None: the seam is unwired),
+    # the caller's ledger, and whether it has been told the ending.
+    user_message: AppendedMessage | None = None
+    ledger: TurnLedger | None = None
+    settled: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1357,6 +1413,61 @@ class AgentTurn:
     prompt_tokens: int
     completion_tokens: int
     final: Json
+
+
+def _with_fallback_key(event: AgentEvent, record: _TurnRecord) -> AgentEvent:
+    """6.4 -- a ``final`` of a turn that switched to the local model carries
+    ``fallback`` (the same description the ``notice`` frame gave)."""
+    if record.fallback is None or not record.fallback.switched:
+        return event
+    return AgentEvent(
+        type=event.type, data={**event.data, _FALLBACK_KEY: record.fallback.describe()}
+    )
+
+
+def _accepted_event(message: AppendedMessage) -> AgentEvent:
+    """``{"conversation_id", "user_message_id", "seq"}`` -- exactly three keys."""
+    return AgentEvent(
+        type=_ACCEPTED_EVENT,
+        data={
+            "conversation_id": message.conversation_id,
+            _USER_MESSAGE_ID_KEY: message.id,
+            "seq": message.seq,
+        },
+    )
+
+
+def _with_user_message_id(event: AgentEvent, record: _TurnRecord) -> AgentEvent:
+    """``final`` + user_message_id, when a user message was stored; else unchanged."""
+    if record.user_message is None:
+        return event
+    return AgentEvent(
+        type=event.type, data={**event.data, _USER_MESSAGE_ID_KEY: record.user_message.id}
+    )
+
+
+def _with_turn_ids(event: AgentEvent, record: _TurnRecord) -> AgentEvent:
+    """``error`` + user_message_id (when stored) + message_id (when a partial was
+    stored). The event's own code/status/detail are untouched."""
+    extra: dict[str, str] = {}
+    if record.user_message is not None:
+        extra[_USER_MESSAGE_ID_KEY] = record.user_message.id
+    if record.message is not None:
+        extra[_MESSAGE_ID_KEY] = record.message.id
+    if not extra:
+        return event
+    return AgentEvent(type=event.type, data={**event.data, **extra})
+
+
+def _turn_ids(data: Json) -> dict[str, str]:
+    """The two id keys of an event payload that are non-empty strings -- what
+    ``_in_band_error`` hands to ``AppError(extensions=...)``."""
+    found: dict[str, str] = {}
+    for name in (_USER_MESSAGE_ID_KEY, _MESSAGE_ID_KEY):
+        value = data.get(name)
+        if isinstance(value, str) and value:
+            found[name] = value
+    return found
 
 
 def _in_band_error(event: AgentEvent) -> AppError:
@@ -1380,12 +1491,15 @@ def _in_band_error(event: AgentEvent) -> AppError:
         # code is the class's own: every 429 in the catalog is
         # `common.rate_limited`.
         return RateLimitedError(
-            detail if isinstance(detail, str) else None, retry_after_s=retry_after_s
+            detail if isinstance(detail, str) else None,
+            retry_after_s=retry_after_s,
+            extensions=_turn_ids(event.data),
         )
     return AppError(
         detail if isinstance(detail, str) else "the agent run failed",
         code=code if isinstance(code, str) else "agent.failed",
         status=status if isinstance(status, int) else 502,
+        extensions=_turn_ids(event.data),
     )
 
 
@@ -1401,19 +1515,33 @@ class AgentOrchestrator:
         self._deps = deps
 
     async def invoke(
-        self, ctx: ExecutionContext, agent_key: str, req: AgentRequest
+        self,
+        ctx: ExecutionContext,
+        agent_key: str,
+        req: AgentRequest,
+        *,
+        ledger: TurnLedger | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Pre-flight, then hand back the agent's event stream.
+
+        ``ledger`` (th-3) is told when the user message is stored and how the
+        turn ended; ``None`` is every caller but ``POST .../messages`` with an
+        ``Idempotency-Key``.
 
         Raises (never yields) on a pre-flight failure — see the module
         docstring on why that distinction is the API layer's whole ability to
         answer 404/422 instead of a broken body.
         """
-        _record, events = await self._begin_turn(ctx, agent_key, req)
+        _record, events = await self._begin_turn(ctx, agent_key, req, ledger)
         return events
 
     async def invoke_once(
-        self, ctx: ExecutionContext, agent_key: str, req: AgentRequest
+        self,
+        ctx: ExecutionContext,
+        agent_key: str,
+        req: AgentRequest,
+        *,
+        ledger: TurnLedger | None = None,
     ) -> AgentTurn:
         """Run one agent turn to completion and return it whole (6.1-ج-3).
 
@@ -1432,7 +1560,7 @@ class AgentOrchestrator:
         ``AgentInvokeOut`` — that happens only where the conversations seam is
         unwired, so it is a deployment fault (500), not a caller's.
         """
-        record, events = await self._begin_turn(ctx, agent_key, req)
+        record, events = await self._begin_turn(ctx, agent_key, req, ledger)
         final: Json = {}
         try:
             async for event in events:
@@ -1442,6 +1570,15 @@ class AgentOrchestrator:
                     final = event.data
         finally:
             await _close_quietly(events)
+        if record.user_message is not None and record.message is None:
+            # th-3: the question was stored and the turn was accepted, but the
+            # reply could not be saved -- a failed turn the caller can reconcile
+            # (502 + the question's id), not "persistence is not wired" (500).
+            raise AppError(
+                "the reply was produced but could not be saved",
+                code="agent.failed",
+                extensions={_USER_MESSAGE_ID_KEY: record.user_message.id},
+            )
         if record.conversation_id is None or record.message is None:
             raise AppError(
                 "conversation persistence is not wired on this deployment",
@@ -1456,7 +1593,11 @@ class AgentOrchestrator:
         )
 
     async def _begin_turn(
-        self, ctx: ExecutionContext, agent_key: str, req: AgentRequest
+        self,
+        ctx: ExecutionContext,
+        agent_key: str,
+        req: AgentRequest,
+        ledger: TurnLedger | None,
     ) -> tuple[_TurnRecord, AsyncIterator[AgentEvent]]:
         """The shared spine of ``invoke``/``invoke_once``: pre-flight, open the
         turn, and build the metered+persisting stream.
@@ -1466,7 +1607,7 @@ class AgentOrchestrator:
         write — an unknown agent key must not leave an orphan thread and a user
         message behind for a run that never started.
         """
-        record = _TurnRecord(meter=_TokenMeter())
+        record = _TurnRecord(meter=_TokenMeter(), ledger=ledger)
         # Every line of this turn names it, pre-flight included (logging-
         # restructure م-10). Bound here, before the stream exists, and not
         # inside it -- `bind_turn` explains why the generator is the wrong place.
@@ -1534,12 +1675,17 @@ class AgentOrchestrator:
             # ValidationError(422) for a malformed one -- both pass straight
             # through, still pre-flight, still mappable to a response.
             agent = self._deps.agents.create(agent_key, ctx, deps)
-            record.conversation_id = await self._open_turn(ctx, agent_key, req)
+            opened = await self._open_turn(ctx, agent_key, req)
             # Again, for a turn that just OPENED its thread: only now is there
             # an id to bind. `None` means the conversations seam is unwired,
             # and then the request's own id (bound above) is the best there is.
-            if record.conversation_id is not None:
+            if opened is not None:
+                record.conversation_id = opened.conversation_id
+                record.user_message = opened
                 bind_turn(agent_key=agent_key, conversation_id=record.conversation_id)
+                # th-3 -- still pre-flight: the question is stored, so the
+                # caller's ledger learns the turn was ACCEPTED before any frame.
+                await self._note_accepted(record)
         except Exception:
             await self._give_back(ctx, record.reservation_id)
             raise
@@ -1559,7 +1705,7 @@ class AgentOrchestrator:
 
     async def _open_turn(
         self, ctx: ExecutionContext, agent_key: str, req: AgentRequest
-    ) -> Uuid | None:
+    ) -> AppendedMessage | None:
         """Resolve this turn's thread and write the user's message into it
         (D-12 for the single agent) — still pre-flight.
 
@@ -1576,6 +1722,9 @@ class AgentOrchestrator:
         streamed answer is complete and correct without persistence, and it is
         ``invoke_once`` — the one caller that cannot do without a message —
         that raises.
+
+        Returns the stored user message (th-3; it used to be dropped), or
+        ``None`` when the seam is unwired.
         """
         threads = self._deps.conversations
         if threads is None:
@@ -1602,10 +1751,112 @@ class AgentOrchestrator:
             )
             conversation_id = started.id
         text, attachments = _turn_content(req.input)
-        await threads.append(
+        return await threads.append(
             ctx, conversation_id, role=_ROLE_USER, text=text, attachments=attachments
         )
-        return conversation_id
+
+    async def _note_accepted(self, record: _TurnRecord) -> None:
+        """``ledger.accepted(AcceptedTurn(...))`` when both exist. A raise is
+        one warning (conversation id and phase only, never the key) and the
+        turn goes on: the ledger annotates a turn, it never fails it."""
+        message = record.user_message
+        if record.ledger is None or message is None:
+            return
+        try:
+            await record.ledger.accepted(
+                AcceptedTurn(
+                    conversation_id=message.conversation_id,
+                    user_message_id=message.id,
+                    seq=message.seq,
+                )
+            )
+        except Exception as exc:
+            _logger.warning(
+                "orchestrator.turn_ledger_failed",
+                extra={"conversation_id": message.conversation_id, "phase": "accepted"},
+                exc_info=exc,
+            )
+
+    async def _settle_ledger(
+        self,
+        record: _TurnRecord,
+        *,
+        replied: bool,
+        code: str | None = None,
+        status: int | None = None,
+    ) -> None:
+        """Tell the ledger how the turn ended -- at most once (``record.settled``).
+        A no-op without a ledger or a stored user message. ``message_id`` is the
+        reply (or the saved partial); usage is the meter's, for a reply only.
+        Same warning on a raise as ``_note_accepted``."""
+        message = record.user_message
+        if record.ledger is None or message is None or record.settled:
+            return
+        record.settled = True
+        outcome = TurnOutcome(
+            accepted=AcceptedTurn(
+                conversation_id=message.conversation_id,
+                user_message_id=message.id,
+                seq=message.seq,
+            ),
+            replied=replied,
+            message_id=None if record.message is None else record.message.id,
+            code=code,
+            status=status,
+            prompt_tokens=record.meter.prompt_total if replied else None,
+            completion_tokens=record.meter.completion_total if replied else None,
+        )
+        try:
+            await record.ledger.settled(outcome)
+        except Exception as exc:
+            _logger.warning(
+                "orchestrator.turn_ledger_failed",
+                extra={"conversation_id": message.conversation_id, "phase": "settled"},
+                exc_info=exc,
+            )
+
+    async def _settle_failed(self, record: _TurnRecord, event: AgentEvent) -> AgentEvent:
+        """th-3 -- a terminal ``error`` event: the ids ride it, and the ledger
+        stores the problem exactly as a JSON caller would receive it (so a
+        replay answers with the very code and status the first caller saw).
+        Runs BEFORE the event is yielded."""
+        event = _with_turn_ids(event, record)
+        err = _in_band_error(event)
+        await self._settle_ledger(record, replied=False, code=err.code, status=err.status)
+        return event
+
+    async def _settle_raised(self, record: _TurnRecord, exc: Exception) -> None:
+        """th-3 -- the machinery around the agent raised: the ledger stores the
+        code the caller will be given (an AppError's own, else common.internal)."""
+        code, status = (
+            (exc.code, exc.status) if isinstance(exc, AppError) else ("common.internal", 500)
+        )
+        await self._settle_ledger(record, replied=False, code=code, status=status)
+
+    async def _settle_abandoned(
+        self, ctx: ExecutionContext, record: _TurnRecord, streamed: Sequence[str]
+    ) -> None:
+        """th-3 -- the reader left: save what streamed (best effort, ب-10), and
+        tell the ledger even when that save was itself cancelled."""
+        try:
+            await self._settle_cut(ctx, record, streamed, reason=_CUT_ABANDONED)
+        finally:
+            await self._settle_ledger(record, replied=False, code="agent.failed", status=502)
+
+    async def _settle_replied(self, record: _TurnRecord, event: AgentEvent) -> AgentEvent:
+        """th-3 -- a ``final`` after ``_persist_reply``: the question's id rides
+        it, and the ledger hears ``replied`` only when the reply was STORED. A
+        ``final`` whose write failed is a failed turn for the ledger
+        (agent.failed/502) while the reader still gets the produced answer."""
+        event = _with_user_message_id(event, record)
+        replied = record.message is not None
+        await self._settle_ledger(
+            record,
+            replied=replied,
+            code=None if replied else "agent.failed",
+            status=None if replied else 502,
+        )
+        return event
 
     async def invoke_workflow(
         self, ctx: ExecutionContext, workflow_key: str, initial_input: Json, *, space_id: Uuid
@@ -2034,6 +2285,11 @@ class AgentOrchestrator:
         # and invite a second, wrongly-marked write of a whole answer.
         terminal = False
         try:
+            # th-3 -- the FIRST frame, before anything is pulled from the agent
+            # (NFR-4): the question is stored, so the reader may hear it at once.
+            # Inside the `try` so abandoning here still passes through `finally`.
+            if record.user_message is not None:
+                yield _accepted_event(record.user_message)
             while True:
                 try:
                     event = await _next_before(events, deadline)
@@ -2056,9 +2312,9 @@ class AgentOrchestrator:
                     # `GeneratorExit` unwind (see `_persist_partial`).
                     terminal = True
                     await self._settle_cut(ctx, record, streamed, reason=_CUT_TIMEOUT)
-                    yield _timeout_event(cap_s)
+                    yield await self._settle_failed(record, _timeout_event(cap_s))
                     break
-                except Exception:
+                except Exception as exc:
                     # An exception that reached THIS frame, which is the rare
                     # half of "the run failed": an agent's own raise is caught
                     # by `AgentLifecycleExecutor` and converted into the
@@ -2068,6 +2324,7 @@ class AgentOrchestrator:
                     # guarantee: saved on the way out, from a frame that is
                     # still running normally.
                     await self._settle_cut(ctx, record, streamed, reason=_CUT_ERROR)
+                    await self._settle_raised(record, exc)
                     raise
                 if event.type == "token":
                     # The text passes through here already — accumulating it
@@ -2088,16 +2345,13 @@ class AgentOrchestrator:
                     # reason exactly: `invoke_once` raises on an in-band
                     # error and may never resume this generator.
                     await self._settle_cut(ctx, record, streamed, reason=_CUT_ERROR)
+                    event = await self._settle_failed(record, event)
                 notice = _due_notice(record.fallback)
                 if notice is not None:
                     yield notice
                 if event.type == "final":
                     terminal = True
-                    if record.fallback is not None and record.fallback.switched:
-                        event = AgentEvent(
-                            type=event.type,
-                            data={**event.data, _FALLBACK_KEY: record.fallback.describe()},
-                        )
+                    event = _with_fallback_key(event, record)
                     # ب-9 — BEFORE `_persist_reply`, so the key is off the
                     # frame by the time anything reads its content: the stored
                     # message is rendered from this same payload, and a media
@@ -2105,6 +2359,7 @@ class AgentOrchestrator:
                     # text (`_turn_content`).
                     event = await self._settle_clarification(ctx, record, event)
                     event = await self._persist_reply(ctx, record, event)
+                    event = await self._settle_replied(record, event)
                 yield event
         finally:
             # ب-10 — the ABANDONMENT net (س-30), and the one path the item
@@ -2116,7 +2371,7 @@ class AgentOrchestrator:
             # so this is attempted, measured under its own reason, and never
             # counted as covered.
             if not terminal:
-                await self._settle_cut(ctx, record, streamed, reason=_CUT_ABANDONED)
+                await self._settle_abandoned(ctx, record, streamed)
             # `finally` so an abandoned or failed run is still billed: it
             # consumed real provider tokens either way. This is sound ONLY
             # because `_TokenMeter` is kept current as chunks arrive — an
@@ -2246,6 +2501,7 @@ class AgentOrchestrator:
                 token_count=completion or None,
                 status=_STATUS_PARTIAL,
                 fallback=fallback,
+                reply_to=None if record.user_message is None else record.user_message.id,
             )
         except Exception as exc:  # never mask the failure that got us here
             _logger.warning(
@@ -2409,6 +2665,7 @@ class AgentOrchestrator:
                 citations=declared.refs,
                 status=_STATUS_COMPLETE,
                 fallback=fallback,
+                reply_to=None if record.user_message is None else record.user_message.id,
             )
         except Exception as exc:  # never mask a produced answer
             _logger.warning(

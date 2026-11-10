@@ -335,8 +335,8 @@ async def test_a_cloud_failure_before_the_first_chunk_is_answered_by_the_local_m
     events = await _turn(orchestrator)
 
     # The notice comes FIRST, before a single word of the local answer.
-    assert [e.type for e in events] == ["notice", "token", "token", "final"]
-    notice = events[0].data
+    assert [e.type for e in events] == ["accepted", "notice", "token", "token", "final"]
+    notice = events[1].data
     assert notice["kind"] == "llm_fallback"
     assert notice["detail"] == _NOTICE_AR
     assert notice["from"] == {"provider": "openai", "model": _CLOUD_MODEL}
@@ -358,7 +358,7 @@ async def test_the_notice_follows_the_language_of_the_question() -> None:
         _ScriptedLLM("openai", fails_first=_TIMED_OUT), _ScriptedLLM("ollama", ["Hi"])
     )
     events = await _turn(orchestrator, text="What is the policy?")
-    assert events[0].data["detail"] == _NOTICE_EN
+    assert events[1].data["detail"] == _NOTICE_EN
     assert _stored_reply(threads).startswith(_NOTICE_EN)
 
 
@@ -369,7 +369,7 @@ async def test_a_healthy_cloud_turn_is_untouched() -> None:
 
     events = await _turn(orchestrator)
 
-    assert [e.type for e in events] == ["token", "final"]
+    assert [e.type for e in events] == ["accepted", "token", "final"]
     assert "fallback" not in events[-1].data
     assert local.calls == []
     assert _stored_reply(threads) == "fine"
@@ -382,8 +382,10 @@ async def test_the_notice_reaches_the_wire_as_its_own_sse_frame() -> None:
     )
     req = AgentRequest(space_id=_SPACE, conversation_id=None, input={"text": "q"})
     frames = [f async for f in sse_stream(await orchestrator.invoke(_ctx(), "chat", req))]
-    assert frames[0].startswith(b"event: notice\ndata: {")
-    assert frames[1].startswith(b"event: token\n")
+    # th-3: `accepted` is the first frame; the notice and the token follow it.
+    assert frames[0].startswith(b"event: accepted\ndata: {")
+    assert frames[1].startswith(b"event: notice\ndata: {")
+    assert frames[2].startswith(b"event: token\n")
 
 
 async def test_the_real_guard_with_an_open_circuit_falls_back_without_calling_the_cloud() -> None:
@@ -399,7 +401,7 @@ async def test_the_real_guard_with_an_open_circuit_falls_back_without_calling_th
 
     events = await _turn(orchestrator)
 
-    assert [e.type for e in events] == ["notice", "token", "final"]
+    assert [e.type for e in events] == ["accepted", "notice", "token", "final"]
     assert inner.calls == []  # the open circuit refused before the adapter
 
 
@@ -413,8 +415,8 @@ async def test_a_rejected_key_is_not_an_outage_and_never_falls_back() -> None:
         _ScriptedLLM("openai", fails_first=_BAD_KEY), local
     )
     events = await _turn(orchestrator)
-    assert [e.type for e in events] == ["error"]
-    assert events[0].data["detail"] == "openai rejected the key"
+    assert [e.type for e in events] == ["accepted", "error"]
+    assert events[1].data["detail"] == "openai rejected the key"
     assert local.calls == []
 
 
@@ -425,8 +427,8 @@ async def test_the_guards_own_saturation_is_not_a_failure_to_fall_back_from() ->
         _ScriptedLLM("openai", fails_first=RateLimitedError("full", retry_after_s=5)), local
     )
     events = await _turn(orchestrator)
-    assert [e.type for e in events] == ["error"]
-    assert events[0].data["status"] == 429
+    assert [e.type for e in events] == ["accepted", "error"]
+    assert events[1].data["status"] == 429
     assert local.calls == []
 
 
@@ -438,7 +440,7 @@ async def test_a_failure_after_the_first_chunk_is_cut_not_answered_twice() -> No
         _ScriptedLLM("openai", ["half"], fails_after=_TIMED_OUT), local
     )
     events = await _turn(orchestrator)
-    assert [e.type for e in events] == ["token", "error"]
+    assert [e.type for e in events] == ["accepted", "token", "error"]
     assert local.calls == []
     assert not _stored_reply(threads).startswith("⚠️ تعذّر")
 
@@ -450,7 +452,7 @@ async def test_a_call_with_tools_is_never_sent_to_a_model_that_cannot_take_them(
         _ScriptedLLM("openai", fails_first=_DOWN), local, agent=_ToolAgent
     )
     events = await _turn(orchestrator, key="tooled")
-    assert [e.type for e in events] == ["error"]
+    assert [e.type for e in events] == ["accepted", "error"]
     assert local.calls == []
 
 
@@ -460,7 +462,7 @@ async def test_without_the_seam_a_cloud_failure_is_the_answer_as_before() -> Non
         _ScriptedLLM("openai", fails_first=_DOWN), local, fallback=None
     )
     events = await _turn(orchestrator)
-    assert [e.type for e in events] == ["error"]
+    assert [e.type for e in events] == ["accepted", "error"]
     assert local.calls == []
 
 
@@ -504,9 +506,9 @@ async def test_when_the_local_model_fails_too_the_user_gets_the_clouds_error() -
 
     # No notice: nothing was answered. The error is the one the user's own
     # choice produced, not a model they never picked.
-    assert [e.type for e in events] == ["error"]
-    assert events[0].data["detail"] == "openai is unreachable"
-    assert events[0].data["status"] == 502
+    assert [e.type for e in events] == ["accepted", "error"]
+    assert events[1].data["detail"] == "openai is unreachable"
+    assert events[1].data["status"] == 502
     assert local.calls == [(_LOCAL_MODEL, "")]
     assert [role for _c, role, *_ in threads.appended] == ["user"]
     assert _fallbacks("failed") == failed_before + 1
@@ -524,7 +526,7 @@ async def test_the_switch_is_sticky_for_the_rest_of_the_turn() -> None:
 
     assert len(cloud.calls) == 1  # the second call never went back to it
     assert local.calls == [(_LOCAL_MODEL, ""), (_LOCAL_MODEL, "")]
-    assert [e.type for e in events] == ["notice", "token", "final"]
+    assert [e.type for e in events] == ["accepted", "notice", "token", "final"]
     assert _stored_reply(threads) == f"{_NOTICE_AR}\n\nl|l"
     assert [c.provider for c in capture.charges] == ["ollama"]
 
@@ -546,7 +548,7 @@ async def test_a_turn_that_mixed_both_models_is_charged_to_the_cloud() -> None:
 
     events = await _turn(orchestrator, key="two")
 
-    assert [e.type for e in events] == ["notice", "token", "final"]
+    assert [e.type for e in events] == ["accepted", "notice", "token", "final"]
     assert _stored_reply(threads) == f"{_NOTICE_AR}\n\nc|l"
     assert [c.provider for c in capture.charges] == ["openai"]
 
@@ -593,7 +595,7 @@ async def test_a_turn_answered_by_the_local_fallback_keeps_its_citations() -> No
 
     events = await _turn(orchestrator, key="citing-chat")
 
-    assert [e.type for e in events] == ["notice", "token", "token", "final"]
+    assert [e.type for e in events] == ["accepted", "notice", "token", "token", "final"]
     assert "fallback" in events[-1].data  # the switch really happened
     assert _stored_reply(threads).startswith(_NOTICE_AR)
     stored = threads.citations[-1]
@@ -659,7 +661,14 @@ async def test_a_switched_turn_keeps_the_final_frames_keys_unchanged() -> None:
         _ScriptedLLM("openai", fails_first=_DOWN), _ScriptedLLM("ollama", ["x"])
     )
     events = await _turn(orchestrator)
-    assert set(events[-1].data) == {"text", "message_id", "content", "usage", "fallback"}
+    assert set(events[-1].data) == {
+        "text",
+        "message_id",
+        "content",
+        "usage",
+        "fallback",
+        "user_message_id",
+    }
     assert "status" not in events[-1].data and "message_status" not in events[-1].data
 
 
@@ -672,7 +681,7 @@ async def test_a_local_model_that_dies_mid_answer_is_stored_partial_and_switched
 
     events = await _turn(orchestrator)
 
-    assert [e.type for e in events] == ["notice", "token", "error"]
+    assert [e.type for e in events] == ["accepted", "notice", "token", "error"]
     assert threads.statuses == [None, "partial"]
     assert _stored_fallback_as_frame(threads) == _SWITCH
     text = _stored_reply(threads)
@@ -761,7 +770,7 @@ async def test_a_partial_turn_whose_fallback_is_dropped_costs_one_warning_withou
     with caplog.at_level("WARNING"):
         events = await _turn(orchestrator)
 
-    assert [e.type for e in events] == ["notice", "token", "error"]
+    assert [e.type for e in events] == ["accepted", "notice", "token", "error"]
     assert threads.statuses == [None, "partial"]
     warnings = [r for r in caplog.records if r.getMessage() == "orchestrator.fallback_not_recorded"]
     assert len(warnings) == 1
