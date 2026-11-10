@@ -96,7 +96,11 @@ from app.framework.types import Json, Uuid
 from app.framework.workflows.engine import SequentialWorkflowEngine, WorkflowResult
 from app.framework.workflows.registry import WorkflowRegistry
 from app.modules.access.ports.inbound import AuthorizationService
-from app.modules.conversations.ports.inbound import AppendedMessage, ConversationThreads
+from app.modules.conversations.ports.inbound import (
+    AppendedMessage,
+    CitationRef,
+    ConversationThreads,
+)
 from app.modules.usage.ports.inbound import UsageCapture, UsageCharge, UsageEnforcement
 
 _logger = get_logger(__name__)
@@ -345,14 +349,92 @@ def _pending_options(raw: object) -> tuple[str, ...]:
     return tuple(item for item in raw if isinstance(item, str) and item.strip())
 
 
+# ث-1 -- the key a RAG-style agent puts on its `final` frame to list the
+# sources it answered from, and the five keys of one item. Read defensively
+# (the value is an agent's JSON) and handed to the conversations port, which
+# owns the VALUE rules (UUID form, rank >= 1, length, at most 50).
+_CITATIONS_KEY = "citations"
+_CITATION_KEYS = ("document_id", "file_name", "page", "chunk_id", "rank")
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _DeclaredCitations:
+    """What a ``final`` frame says about its sources, JSON-shape-checked (ث-1)."""
+
+    refs: tuple[CitationRef, ...] | None  # None = nothing to record
+    malformed: bool = False  # True => refs is None and a warning is owed
+    count: int = 0  # len of the declared list; 0 when not a list
+
+
+def _is_int(value: object) -> bool:
+    return type(value) is int  # bool is NOT an int here
+
+
+def _citation_ref(item: object) -> CitationRef | None:
+    if not isinstance(item, dict) or any(key not in item for key in _CITATION_KEYS):
+        return None
+    document_id = item["document_id"]
+    file_name = item["file_name"]
+    page = item["page"]
+    chunk_id = item["chunk_id"]
+    rank = item["rank"]
+    if (
+        not isinstance(document_id, str)
+        or not isinstance(chunk_id, str)
+        or not (file_name is None or isinstance(file_name, str))
+        or not (page is None or _is_int(page))
+        or not _is_int(rank)
+    ):
+        return None
+    return CitationRef(
+        document_id=document_id,
+        file_name=file_name,
+        page=page,
+        chunk_id=chunk_id,
+        rank=rank,
+    )
+
+
+def _declared_citations(data: Json) -> _DeclaredCitations:
+    """Defensive in ``_pending_options``' shape and for its reason: what
+    arrives is an agent's JSON, not a typed value.
+
+    - key absent, or value None          -> refs=None, malformed=False
+    - value not a list                   -> refs=None, malformed=True
+    - any item not a dict, missing one of ``_CITATION_KEYS``, or with a JSON
+      type that does not fit ``CitationRef`` -> refs=None, malformed=True
+    - otherwise                          -> one ``CitationRef`` per item, SAME
+      order, extra keys dropped; ``[]`` stays ``()``
+
+    VALUES (UUID form, rank >= 1, length, count <= 50) are NOT checked here:
+    they are the module's rules (``domain.Citation`` / ``MAX_CITATIONS``).
+    """
+    raw = data.get(_CITATIONS_KEY)
+    if raw is None:
+        return _DeclaredCitations(refs=None)
+    if not isinstance(raw, list):
+        return _DeclaredCitations(refs=None, malformed=True)
+    refs: list[CitationRef] = []
+    for item in raw:
+        ref = _citation_ref(item)
+        if ref is None:
+            return _DeclaredCitations(refs=None, malformed=True, count=len(raw))
+        refs.append(ref)
+    return _DeclaredCitations(refs=tuple(refs), count=len(raw))
+
+
 # ب-10 (خطة السيناريوهات section 8، ف-8) — the sentence appended to a reply
 # the PLATFORM cut short, in ق-هـ's wording.
 #
 # A sentence in the body and NOT a field on the message, which is decision 1
-# of the item: `MessageContent` has no structured half (the identical
-# constraint ف-4 and ف-1أ each ran into from their own side), so a flag would
-# mean a column, a migration and a rendering rule in every client — for one
-# bit that a line of text states to every reader that already exists.
+# of the item: when it was taken `MessageContent` had no structured half (the
+# identical constraint ف-4 and ف-1أ each ran into from their own side). ث-1
+# has since given the message one -- `messages.citations`, a column of its
+# own, not a key in `content` -- so the "column and migration" part of the
+# cost is now a precedent already paid; the "rendering rule in every client"
+# part still stands, and turning this marker into a field is ث-2, not decided
+# here. The sentence stays: one line of text states it to every reader that
+# already exists.
 _INCOMPLETE_MARKER_AR = "⚠️ انقطعت الإجابةُ قبل اكتمالها."
 _INCOMPLETE_MARKER_EN = "⚠️ This answer was cut off before it finished."
 # Kept apart from both sentences so neither Arabic literal has to carry an
@@ -363,7 +445,7 @@ _MARKER_GAP = "\n\n"
 # not answer and the local one did (`_Fallback`). It goes out three ways: a
 # `notice` frame BEFORE the local model's first token, a `fallback` key on the
 # `final` frame, and this same sentence at the head of the stored reply — the
-# last for ب-10's reason exactly: `MessageContent` has no structured half, and
+# last for ب-10's reason exactly (see its note on `messages.citations`), and
 # a reader returning to the thread must still be able to see why this answer
 # is not from the model the conversation is pinned to. At the HEAD, unlike
 # ب-10's marker: that one remarks on how an answer ended, this one on who
@@ -426,9 +508,11 @@ def _turn_content(data: Json) -> tuple[str, tuple[str, ...]]:
     payload records what the agent ACTUALLY said, losslessly, instead of
     either inventing a sentence for it or silently dropping the turn. It reads
     poorly in a chat UI, and that is the honest signal of the real gap:
-    ``MessageContent`` has no structured ``data`` field (06 §4 / 01 §2.4), so
-    a structured reply has nowhere else to go. Recorded as a doc-sync
-    recommendation rather than papered over.
+    a message still has no GENERAL structured ``data`` field (06 §4 / 01 §2.4),
+    so a structured reply has nowhere else to go. It has exactly one structured
+    field for one known shape, ``citations`` (ث-1), written separately by
+    ``_persist_reply``. Recorded as a doc-sync recommendation rather than
+    papered over.
     """
     raw_text = data.get("text")
     attachments = _file_refs(data)
@@ -2220,6 +2304,11 @@ class AgentOrchestrator:
         and dropping what the agent said to match an example literally would
         lose real information the streaming client already relies on.
 
+        ``citations`` are now ALSO saved with the message (ث-1), in the same
+        ``append`` call, and stay on the frame unchanged. A malformed or
+        over-long list is stored as NULL and logged once; it never fails the
+        turn.
+
         ``token_count`` on the stored message is the COMPLETION half of the
         turn — what this reply cost — not the turn total, which would double
         count the prompt against every message in the thread.
@@ -2237,6 +2326,16 @@ class AgentOrchestrator:
             return event
         text, attachments = _turn_content(event.data)
         completion = record.meter.completion_total
+        declared = _declared_citations(event.data)
+        if declared.malformed:
+            _logger.warning(
+                "orchestrator.citations_not_recorded",
+                extra={
+                    "conversation_id": record.conversation_id,
+                    "count": declared.count,
+                    "reason": "shape",
+                },
+            )
         try:
             message = await threads.append(
                 ctx,
@@ -2245,6 +2344,7 @@ class AgentOrchestrator:
                 text=_with_fallback_notice(text, record.fallback),
                 attachments=attachments,
                 token_count=completion or None,
+                citations=declared.refs,
             )
         except Exception as exc:  # never mask a produced answer
             _logger.warning(
@@ -2253,6 +2353,16 @@ class AgentOrchestrator:
                 exc_info=exc,
             )
             return event
+        # the module dropped what was sent (a value rule, or more than 50)
+        if declared.refs is not None and message.citations is None:
+            _logger.warning(
+                "orchestrator.citations_not_recorded",
+                extra={
+                    "conversation_id": record.conversation_id,
+                    "count": len(declared.refs),
+                    "reason": "rejected",
+                },
+            )
         record.message = message
         return AgentEvent(
             type=event.type,

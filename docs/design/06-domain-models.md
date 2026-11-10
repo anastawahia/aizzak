@@ -82,20 +82,24 @@ AR  Conversation { id, workspace_id, space_id, agent_key: AgentKey, kind: Conver
                    title, model_route, pending_clarification, created_by,
                    created_at, updated_at, deleted_at, version }
 E   Message      { id, conversation_id, workspace_id, role: MessageRole, content: MessageContent,
-                   token_count, seq: int, created_at, deleted_at }
+                   token_count, seq: int, created_at, deleted_at,
+                   citations: tuple[Citation] | None }
 VO  AgentKey         (slug الوكيل من الـManifest؛ أو workflow_key عند kind=workflow)
 VO  ConversationKind (agent | workflow)
 VO  MessageRole      (user | assistant | system | tool)
 VO  MessageContent   (نص + مرفقات اختيارية: قائمة file_id بالإشارة فقط)
+VO  Citation         (document_id, file_name, page, chunk_id, rank) — لقطة مصدر جواب المساعد (ث‑1)
 EV  ConversationStarted(conversation_id, workspace_id, agent_key, kind, occurred_at)
 EV  MessageAppended(message_id, conversation_id, role, seq, occurred_at)
 ```
 - **`space_id`** (‏خطّة المساحات §3.2): المساحةُ التي فُتح فيها الخيط. محورُ ملكيّةٍ **داخل** المستأجر لا حدُّ أمانٍ ثانٍ، وبلا مُبدِّل: نقلُ خيطٍ بين المساحات يُعيد توجيه نطاقِ استرجاع كلِّ رسائله بصمت.
 - **`model_route`** (‏`BE‑RAG‑003`): مفتاحُ توجيهٍ من جدول D‑16، لا اسمَ موديلٍ خام. `None` ⇒ يُحلّ بمفتاح الوكيل.
 - **`pending_clarification`** (‏ب‑9، ف‑1أ): أسماءُ الملفّات التي سألها الدورُ السابق «أيّ ملفّ تقصد؟» **بترتيب عرضها**، و`()` ⇒ لا سؤالَ معلَّق. **أسماءٌ لا مُعرِّفات**، لأنّ المعروضَ أسماءٌ والجوابَ عن معروض، و«الثاني» لا يُقرأ إلّا على القائمة التي عُرضت. وتعيش **دوراً واحداً**: `expect_clarification` هي الضبطُ والمحوُ معاً، فلا يصير المحوُ خطوةً يمكن إغفالُها — ونيّةٌ تعيش دورين تقرأ سؤالاً جديداً تماماً جواباً على سؤالٍ منسيّ.
+- **`citations`** (‏ث‑1): مصادر جواب المساعد كما أصدرها الوكيل، **بترتيبها** وقيمها حرفياً. `None` ⇒ لم يُسجَّل (رسائل المستخدم، الصفوف القديمة، وكيلٌ بلا استشهادات، الأجوبة المقطوعة، مخرجات خطوات الـworkflow، قائمةٌ تالفة)، و`()` ⇒ صرّح الوكيل بلا مصادر. **عمودٌ مستقلّ لا مفتاحٌ في `content`**: يبقى `MessageContent` نصاً ومرفقات فقط، وللرسالة جزءٌ مُهيكَل واحد هو هذا. وهذا يصحّح فرضية ب‑10 القديمة «لا نصفَ مُهيكَلاً للرسالة» (علامة الانقطاع تبقى جملةً في النص؛ تحويلها إلى حقل قرارٌ لاحق). `Citation` لقطة وقت الجواب: `file_name` لا يُحدَّث من `files` بعد ذلك. قواعد الصحة في VO `Citation` وحدها: `document_id`/`chunk_id` بصيغة UUID، و`rank ≥ 1`، و`page` فارغة أو ≥ 1، و`file_name` فارغ أو من 1 إلى 255 حرفاً.
 - **INV‑CV1:** `seq` متتابع تصاعدي داخل المحادثة (منع الفجوات/التكرار عبر قفل تفاؤلي على `Conversation.version`).
 - **INV‑CV2:** المرفقات تُشار إليها بـ`file_id` فقط (مِلكية المحتوى لوحدة `files`) — لا نسخ محتوى.
 - **INV‑CV3:** لا إلحاق برسائل محادثة `deleted_at IS NOT NULL`. الحذف الناعم متاح على مستويين: المحادثة (`Conversation.deleted_at`) والرسالة المفردة (`Message.deleted_at`)؛ رسالة محذوفة ناعماً تُستبعَد من الاسترجاع دون تغيير `seq` (لا فجوات في العدّاد).
+- **INV‑CV4:** `citations` لرسائل `assistant` وحدها، وبحدٍّ أقصى 50 (`MAX_CITATIONS`). الاستشهادات التالفة أو الزائدة عن الحد تُسقِطها حالة الاستخدام `AppendMessage` (تُخزَّن `None`) ولا تُفشل الإلحاق: النص هو الدور، والاستشهادات تعليقٌ عليه.
 - **Use‑cases:** `StartConversation`, `AppendMessage`, `ListConversationsByAgent`, `RenameConversation`, `SoftDeleteConversation`, `PinConversationModel`, `ExpectClarification`.
 
 ---
@@ -144,7 +148,7 @@ EV  FileDeleted(file_id, workspace_id, occurred_at)
 - **INV‑F2:** لا يُتاح ملف للاستخدام إلا بحالة `ready`.
 - **INV‑F3:** أي وكيل داخل الـWorkspace يقرأ أي ملف `ready` (مِلكية على مستوى Workspace لا الوكيل).
 - **INV‑F4 (‏`BE‑RAG‑006`):** الاسمُ (ومعه الوسوم، INV‑F6) هو ما يقبل التعديل بعد التسجيل، و**امتداده ثابت**: `File.rename` يقبل اسماً بامتدادٍ مطابق أو بلا امتداد (فيرث الحاليّ) ويرفض ما عداه. البايتات و`content_type` و`storage_key` و`size_bytes` لا يمسّها شيء، فالامتداد ادّعاءٌ عنها يجب أن يظلّ صادقاً. وإعادة التسمية **لا تبثّ حدثاً**: `knowledge` يفهرس بـ`file_id` ولا يخزّن اسماً، فلا مستهلِك لحدثٍ كهذا.
-- **INV‑F5 (‏`PLT‑01`):** الملف المجزّأ يملك `MultipartUpload` واحداً منذ تسجيله، ثابتاً لا يُعاد توجيهه (كسائر ما يصف البايتات). ولا يصير `ready` إلا بعد أن يجمّع التخزين أجزاءه `1..part_count` بالأحجام المتوقعة، فيساوي الكائن المخزَّن `size_bytes` المعلَن بالضبط. الجلسة عمودان في `files.files` (`upload_id`، `part_bytes`) بقيد يوجبهما معاً أو يمنعهما معاً.
+- **INV‑F5 (‏`PLT‑01`):** الملف المجزّأ يملك `MultipartUpload` واحداً منذ تسجيله، ثابتاً لا يُعاد توجيهه (كسائر ما يصف البايتات). ولا يصير `ready` إلا بعد أن يجمّع التخزين أجزاءه `1..part_count` بالأحجام المتوقعة، فيساوي الكائن المخزَّن `size_bytes` المعلَن بالضبط. والملف ذو الطلب الواحد (PUT) كذلك: لا يصير `ready` إلا إذا وجد التخزين كائناً حجمه `size_bytes` بالضبط، أما `checksum` فيُسجَّل ولا يُقارَن. الجلسة عمودان في `files.files` (`upload_id`، `part_bytes`) بقيد يوجبهما معاً أو يمنعهما معاً.
 - **INV‑F6 (‏`PLT‑26`):** الوسوم الثلاثة (`system` و`equipment` و`department`) تصف الملف لا بايتاته، فتتغيّر بـ`File.retag` وحده، كما يتغيّر الاسم بـ`rename` وحده (INV‑F4). الوسمُ الغائب `None`، ولا يُخزَّن ولا يُنشر فارغاً؛ والقيمة الحاضرة رمزٌ مرجعيٌّ معتم يُطبَّع (NFC وقصّ المسافات) ثم يُشترط فيه 1..128 محرفاً، ويُرفض (`InvalidFileInput` ⇒ 422) كلُّ محرفٍ فئته في Unicode إحدى `Cc` (التحكّم C0/C1) و`Cf` (التنسيق: صفريّ العرض وBOM والواصلة اللينة وتجاوز الاتجاه وعزله ومحارف الوسم) و`Cs` (البدائل المنفردة) و`Co` (الاستعمال الخاص) و`Cn` (غير المعيَّن) و`Zl` و`Zp` (فاصل السطر والفقرة)، وكذلك كلُّ نصٍّ لا يُرمَّز UTF‑8؛ وتبقى المسافات العادية (`Zs`، ومنها NBSP) وحروف كل الكتابات (العربية والصينية…). ولا تذكر الرسالةُ قيمةَ الوسم، وإنما نوعه. (والاسمُ `name` لم يتغيّر بهذا.) ويُقارن **حرفياً** بلا طيّ حالة الأحرف (`files` لا يفسّره). و`retag` استبدالٌ كامل للثلاثة؛ وإعادةٌ بالوسوم نفسها تعيد `False` ولا تكتب ولا تغيّر `updated_at` (قاعدة `rename`)، وملفٌّ محذوف يُرفض (`FileStateError`)، وأي حالةٍ أخرى تُقبل. **والاستبدال بالاسم** (س‑29 القاعدة ١) يقع بين ملفين في الوحدة نفسها إذا تطابق الاسم (`lower(normalize(name, NFC))`) **وتطابق كل وسمٍ من الثلاثة حرفياً**، والغائب يطابق الغائب وحده؛ ونوع الملف لا يدخل في التطابق. **ولا يكنس `rename` ولا `retag` إلا إذا كان الملف العائد `ready`** (لا يُهدَم موجودٌ لوعدٍ لم تصل بايتاته: «لا شيء يُحذف مقابل وعد»)، أما `complete` فيكنس دائماً لأنه ما يجعل الملف `ready`. ولا حدث لإعادة الوسم (INC1‑D‑5): `FileUploaded` وحده يحمل `tags`، وغائبةً حين لا وسم.
 - **Use‑cases:** `RegisterUpload` (بوضع `UploadMode`)، `MultipartRegistrar`، `MultipartUploadService` (`sign_parts` · `progress` · `assemble`)، `CompleteUpload`، `ListFiles`، `RenameFile`، `RetagFile`، `SoftDeleteFile`. و`CompleteUploadService` يستدعي `assemble` **قبل** فتح وحدة العمل (لا I/O شبكي تحت معاملة مفتوحة).
 

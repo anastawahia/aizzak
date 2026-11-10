@@ -29,7 +29,8 @@ the SSE terminal ``error`` frame, which the encoder owns.
 
 **Auth on every route** via the router-level ``current_principal`` dependency
 (03 §0: bearer on all paths but ``/health``). ``list``/``get`` need only that
-gate; ``invoke`` additionally builds the ``ExecutionContext`` its delegate call
+gate (``list`` also reads the caller's roles, to hide the agents it cannot
+run); ``invoke`` additionally builds the ``ExecutionContext`` its delegate call
 carries. RBAC (``required_permissions``) is Phase 6.4's guard — the manifests
 already publish the permissions each agent will demand.
 """
@@ -67,11 +68,27 @@ def _to_agent_out(metadata: AgentMetadata) -> AgentOut:
 
 
 @router.get("", dependencies=[Depends(require(Permission.AGENTS_READ))])
-async def list_agents(services: Services) -> Page[AgentOut]:
+async def list_agents(services: Services, ctx: Context) -> Page[AgentOut]:
     """The agent catalog (03 §1). Unpaginated — the registry is a small static
     map — so the ``API-04`` envelope carries ``next_cursor: null`` and a
-    ``limit`` equal to the returned count."""
-    data = [_to_agent_out(metadata) for metadata in services.agents.list()]
+    ``limit`` equal to the returned count.
+
+    Only the agents the caller can actually run are listed: every permission
+    in a manifest's ``required_permissions`` must be granted to the caller's
+    roles (the same pure ``is_allowed`` lookup the route guards make). A
+    ``viewer`` holds ``agents:read`` but not ``agents:invoke``, so the catalog
+    it sees is empty rather than a list of agents whose invoke answers 403.
+    ``GET /agents/{key}`` stays unfiltered: it describes one manifest.
+    """
+    authorization = services.authorization
+    data = [
+        _to_agent_out(metadata)
+        for metadata in services.agents.list()
+        if all(
+            authorization.is_allowed(ctx.roles, permission)
+            for permission in metadata.required_permissions
+        )
+    ]
     return Page(data=data, meta=PageMeta(next_cursor=None, limit=len(data)))
 
 

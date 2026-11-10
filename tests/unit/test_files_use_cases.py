@@ -1366,17 +1366,55 @@ async def test_assemble_again_after_a_join_is_safe_and_a_sweep_is_expired() -> N
     assert exc_info.value.code == "files.upload_expired"
 
 
-async def test_assemble_does_nothing_for_single_put_ready_deleted_or_unknown_files() -> None:
+async def test_assemble_does_nothing_for_ready_deleted_or_unknown_files() -> None:
     files, storage = _FakeFiles(), FakeMultipartStorage()
     service = _service(files, storage)
-    single = _seed_file(files, _ctx())
     ready = await _multipart_file(files, storage)
     ready.status = FileStatus.READY
 
-    for file_id in (single.id, ready.id, "unknown"):
+    for file_id in (ready.id, "unknown"):
         await service.assemble(_ctx(), file_id)
 
     assert storage.listed == 0 and storage.completed == []
+
+
+async def test_assemble_proves_a_single_put_file_by_its_object_size() -> None:
+    """Data Search gap ث-9 (``docs/delivery/data-search-android/gaps.md``): a single-PUT file is not
+    joined, but ``complete`` may not mark it ready until storage holds an
+    object of exactly the declared size -- absent or short is 409
+    ``files.upload_incomplete``, and the parts API is never asked."""
+    files, storage = _FakeFiles(), FakeMultipartStorage()
+    service = _service(files, storage)
+    single = _seed_file(files, _ctx())
+    key = single.storage_key.value
+
+    with pytest.raises(ConflictError) as missing:
+        await service.assemble(_ctx(), single.id)
+    assert missing.value.code == "files.upload_incomplete"
+
+    storage.objects[key] = single.size_bytes - 1
+    with pytest.raises(ConflictError) as short:
+        await service.assemble(_ctx(), single.id)
+    assert short.value.code == "files.upload_incomplete"
+
+    storage.objects[key] = single.size_bytes
+    await service.assemble(_ctx(), single.id)
+    assert storage.listed == 0 and storage.completed == []
+
+
+async def test_a_single_put_file_without_its_bytes_stays_uploaded_and_emits_nothing() -> None:
+    files, storage = _FakeFiles(), FakeMultipartStorage()
+    single = _seed_file(files, _ctx())
+    outbox = _FakeOutbox()
+    complete = CompleteUploadService(
+        CompleteUpload(files), outbox, _FakeUnitOfWork(), assembler=_service(files, storage)
+    )
+
+    with pytest.raises(ConflictError):
+        await complete.complete(_ctx(), file_id=single.id, checksum=None)
+
+    assert files.rows[single.id].status is FileStatus.UPLOADED
+    assert outbox.calls == []
 
 
 class _OrderTrace:
@@ -1384,7 +1422,7 @@ class _OrderTrace:
         self.events: list[str] = []
 
 
-async def test_complete_assembles_before_the_unit_of_work_and_a_single_file_skips_it() -> None:
+async def test_complete_assembles_before_the_unit_of_work_and_a_single_file_is_not_joined() -> None:
     files = _FakeFiles()
     trace = _OrderTrace()
 
@@ -1414,9 +1452,10 @@ async def test_complete_assembles_before_the_unit_of_work_and_a_single_file_skip
     assert len(outbox.calls) == 1
 
     single = _seed_file(files, _ctx())
+    storage.objects[single.storage_key.value] = single.size_bytes  # the client's PUT
     listed_before = storage.listed
     await service.complete(_ctx(), file_id=single.id, checksum=None)
-    assert storage.listed == listed_before  # the assembler never touched storage
+    assert storage.listed == listed_before  # no parts listed, no join
 
 
 # --------------------------------------------------------------------------- #

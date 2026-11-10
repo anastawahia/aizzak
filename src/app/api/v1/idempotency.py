@@ -1,7 +1,8 @@
 """The ``Idempotency-Key`` seam at the API boundary (03-api-spec §0 · 3.79).
 
-``openapi.yaml`` declares the header on exactly three operations —
-``registerFile``, ``createMediaJob``, ``runWorkflow`` — and 03 §0 promises
+``openapi.yaml`` declares the header on a fixed set of operations
+(``registerFile``, ``createMediaJob``, ``runWorkflow``, ``createConversation``, ...)
+— and 03 §0 promises
 "إعادة المحاولة آمنة". From 6.1-هـ-3 until 3.79 the header was declared in the
 contract, absent from every handler signature (so absent from the GENERATED
 OpenAPI too) and silently discarded: a client that sent one on a billable
@@ -11,7 +12,7 @@ that promise, made real.
 **The shape: one function the handlers call, not a middleware.** A middleware
 would have to re-derive which operations opt in, buffer every response body to
 find out whether it should have stored one, and reason about streaming
-responses it cannot store — all to avoid three call sites. The explicit call
+responses it cannot store — all to avoid a handful of call sites. The explicit call
 keeps `10 §3`'s "thin router" honest (the handler still just validates a DTO
 and calls a use-case; this wraps that call) and makes the opt-in visible in the
 one place a reader looks: the route.

@@ -174,6 +174,33 @@ class _TwoCallAgent(BaseAgent):
         yield AgentEvent(type="final", data={"text": "|".join(parts)})
 
 
+_CITED_DOC = "0190aaaa-0000-7000-8000-000000000001"
+_CITED_CHUNK = "0190bbbb-0000-7000-8000-000000000001"
+
+
+class _CitingChatAgent(_ChatAgent):
+    """A RAG-shaped agent: streams its answer from the LLM (so a cloud outage
+    really does route through the fallback) and lists its sources on `final`."""
+
+    metadata = _metadata("citing-chat", capabilities=frozenset({"chat"}))
+    sources: ClassVar[list[Json]] = [
+        {
+            "document_id": _CITED_DOC,
+            "file_name": "دليل الصيانة ٢٠٢٦.pdf",
+            "page": 3,
+            "chunk_id": _CITED_CHUNK,
+            "rank": 1,
+        }
+    ]
+
+    async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        async for event in super().run(req):
+            if event.type == "final":
+                yield AgentEvent(type="final", data={**event.data, "citations": self.sources})
+            else:
+                yield event
+
+
 def _resolver(
     cloud: LLMProvider,
     local: LLMProvider,
@@ -552,3 +579,39 @@ def test_a_provider_failure_is_still_the_catalogued_502() -> None:
     `transient`, and nothing else about the error moved."""
     assert isinstance(_DOWN, AppError)
     assert (_DOWN.code, _DOWN.status) == ("agent.failed", 502)
+
+
+async def test_a_turn_answered_by_the_local_fallback_keeps_its_citations() -> None:
+    """th-1 / AC-1.8 through the REAL fallback path (resolver, guard seam and
+    orchestrator), not a synthetic `fallback` key: the reply stored after the
+    cloud failed carries the sources AND still opens with the notice."""
+    orchestrator, threads, _capture = _orchestrator(
+        _ScriptedLLM("openai", fails_first=_DOWN),
+        _ScriptedLLM("ollama", [_GREETING, _GREETING_TAIL]),
+        agent=_CitingChatAgent,
+    )
+
+    events = await _turn(orchestrator, key="citing-chat")
+
+    assert [e.type for e in events] == ["notice", "token", "token", "final"]
+    assert "fallback" in events[-1].data  # the switch really happened
+    assert _stored_reply(threads).startswith(_NOTICE_AR)
+    stored = threads.citations[-1]
+    assert stored is not None
+    assert [(c.document_id, c.file_name, c.page, c.chunk_id, c.rank) for c in stored] == [
+        (_CITED_DOC, "دليل الصيانة ٢٠٢٦.pdf", 3, _CITED_CHUNK, 1)
+    ]
+    assert events[-1].data["citations"] == _CitingChatAgent.sources
+
+
+async def test_a_healthy_cloud_turn_keeps_its_citations_without_a_notice() -> None:
+    orchestrator, threads, _capture = _orchestrator(
+        _ScriptedLLM("openai", ["fine"]), _ScriptedLLM("ollama", ["never"]), agent=_CitingChatAgent
+    )
+
+    events = await _turn(orchestrator, key="citing-chat")
+
+    assert "fallback" not in events[-1].data
+    assert _stored_reply(threads) == "fine"
+    assert threads.citations[-1] is not None
+    assert len(threads.citations[-1] or ()) == 1

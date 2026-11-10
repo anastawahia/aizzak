@@ -45,6 +45,22 @@ class StartedConversation:
 
 
 @dataclass(frozen=True, slots=True)
+class CitationRef:
+    """One citation as it crosses the port (th-1) -- plain fields, no rules.
+
+    A handle, for ``AppendedMessage``'s reason: the caller should not import
+    this module's domain. The rules live on ``domain.Citation``, and the
+    module applies them in ``AppendMessage``.
+    """
+
+    document_id: str
+    file_name: str | None
+    page: int | None
+    chunk_id: str
+    rank: int
+
+
+@dataclass(frozen=True, slots=True)
 class AppendedMessage:
     """What a caller gets back after writing one turn into a thread.
 
@@ -63,6 +79,9 @@ class AppendedMessage:
     token_count: int | None
     seq: int
     created_at: datetime
+    # th-1 -- what was STORED, which can be None even when citations were sent
+    # (the module dropped them as malformed). Last and defaulted.
+    citations: tuple[CitationRef, ...] | None = None
 
 
 class ConversationThreads(Protocol):
@@ -110,6 +129,7 @@ class ConversationThreads(Protocol):
         text: str,
         attachments: tuple[str, ...] = (),
         token_count: int | None = None,
+        citations: tuple[CitationRef, ...] | None = None,
     ) -> AppendedMessage: ...
 
     async def routed_model(self, ctx: ExecutionContext, conversation_id: Uuid) -> str | None:

@@ -179,6 +179,7 @@ paths:
     get:
       tags: [agents]
       operationId: listAgents
+      description: "The agents the caller can actually run: an agent is listed only when the caller's roles grant every permission in its `required_permissions`. A `viewer` (who holds `agents:read` but not `agents:invoke`) therefore gets an empty page rather than agents whose invoke answers 403. `getAgent` stays unfiltered: it describes one manifest."
       responses:
         "200": { description: OK, headers: { X-Correlation-Id: { $ref: "#/components/headers/CorrelationId" } }, content: { application/json: { schema: { $ref: "#/components/schemas/AgentPage" } } } }
         default: { $ref: "#/components/responses/Problem" }
@@ -229,6 +230,8 @@ paths:
     post:
       tags: [conversations]
       operationId: createConversation
+      description: "Open a thread under one agent, inside one space. `Idempotency-Key` is honoured: a retry after a timeout with the same key and body replays the first thread (as it was at creation) instead of opening a second one; the same key with a different body is 409."
+      parameters: [ { $ref: "#/components/parameters/IdempotencyKey" } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ConversationCreateIn" } } } }
       responses:
         "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/ConversationOut" } } } }
@@ -414,7 +417,7 @@ paths:
     post:
       tags: [files]
       operationId: completeFile
-      description: "Mark the uploaded bytes ready — the moment the file becomes usable and the only point at which it may be indexed. The body is optional: a client that cannot hash its upload still completes honestly, with `checksum: null`. **A name the space already holds, with the same tags, is a REPLACEMENT** (owner decision س-29 rule 1): once the bytes are recorded, every OLDER live file in the same space with the same name AND the same three classification tags (`system`, `equipment`, `department`; an absent tag matches only an absent one, and the file type plays no part) is deleted together with its index, so a re-upload under an existing name and tags updates that file instead of leaving two copies answering the same question. Files without tags follow the rule exactly as before. The direction is fixed — a newer arrival supersedes an older one and never the reverse — and \"the same name\" is compared as `lower(normalize(name, NFC))`, so case and Unicode composition do not make two files out of one, while a tag is an opaque reference compared literally. Nothing is destroyed at REGISTRATION: a presigned PUT is a promise, and an abandoned upload leaves the existing file untouched. The replacement runs AFTER this call has succeeded and cannot turn it into a failure; the response is unchanged. Completion is the moment a file becomes ready, so it is where a file that was registered or renamed or re-tagged while only a promise finally replaces its older namesakes. **A multipart file is assembled first:** every part `1..part_count` must be held at its expected size, otherwise 409 `files.upload_incomplete` and nothing changes (upload the missing parts and call again); 409 `files.upload_expired` if storage already swept the upload. Repeating the call after a successful assembly is safe. Only the member who registered a multipart file may complete it; another member gets 404."
+      description: "Mark the uploaded bytes ready — the moment the file becomes usable and the only point at which it may be indexed. The body is optional: a client that cannot hash its upload still completes honestly, with `checksum: null`. **A name the space already holds, with the same tags, is a REPLACEMENT** (owner decision س-29 rule 1): once the bytes are recorded, every OLDER live file in the same space with the same name AND the same three classification tags (`system`, `equipment`, `department`; an absent tag matches only an absent one, and the file type plays no part) is deleted together with its index, so a re-upload under an existing name and tags updates that file instead of leaving two copies answering the same question. Files without tags follow the rule exactly as before. The direction is fixed — a newer arrival supersedes an older one and never the reverse — and \"the same name\" is compared as `lower(normalize(name, NFC))`, so case and Unicode composition do not make two files out of one, while a tag is an opaque reference compared literally. Nothing is destroyed at REGISTRATION: a presigned PUT is a promise, and an abandoned upload leaves the existing file untouched. The replacement runs AFTER this call has succeeded and cannot turn it into a failure; the response is unchanged. Completion is the moment a file becomes ready, so it is where a file that was registered or renamed or re-tagged while only a promise finally replaces its older namesakes. **A multipart file is assembled first:** every part `1..part_count` must be held at its expected size, otherwise 409 `files.upload_incomplete` and nothing changes (upload the missing parts and call again); 409 `files.upload_expired` if storage already swept the upload. Repeating the call after a successful assembly is safe. Only the member who registered a multipart file may complete it; another member gets 404. **A single-PUT file is verified too:** storage must hold an object of exactly the registered `size_bytes`, otherwise 409 `files.upload_incomplete` and nothing changes (PUT the bytes to `upload_url` and call again). The `checksum` is recorded, not compared."
       parameters: [ { $ref: "#/components/parameters/Id" } ]
       requestBody: { required: false, content: { application/json: { schema: { $ref: "#/components/schemas/FileCompleteIn" } } } }
       responses:
@@ -1345,9 +1348,25 @@ components:
         id: {type: string, format: uuid}
         role: {type: string, enum: [user, assistant, system, tool]}
         content: {type: object, additionalProperties: true}
+        citations:
+          type: array
+          nullable: true
+          maxItems: 50
+          items: { $ref: "#/components/schemas/Citation" }
+          description: "Sources the assistant answered from, stored with the message (gap th-1) and equal to the `citations` of that turn's `final` frame. Always present. `null` = none recorded (user messages, messages saved before this field, agents that emit none, cut-off replies, workflow step outputs). `[]` = the agent stated there are no sources. A snapshot taken at answer time: a later rename or delete of the file does not change it."
         token_count: {type: integer, nullable: true}
         seq: {type: integer}
         created_at: {type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$"}
+    Citation:
+      type: object
+      required: [document_id, file_name, page, chunk_id, rank]
+      description: "One retrieved source, in the shape `rag_agent` puts on `final` (03 §3.1). `file_name`/`page` are always present and `null` when the indexed chunk carried none."
+      properties:
+        document_id: {type: string, format: uuid}
+        file_name: {type: string, nullable: true, maxLength: 255}
+        page: {type: integer, nullable: true, minimum: 1}
+        chunk_id: {type: string, format: uuid}
+        rank: {type: integer, minimum: 1, description: "One-based retrieval rank, as emitted; never re-ordered."}
     MessageCreateIn:
       type: object
       required: [content]
@@ -1391,7 +1410,7 @@ components:
       type: object
       description: "`tags` is optional. A malformed tag (empty, over 128 characters after normalisation and trimming, or containing a forbidden character - see `FileTagsIn`) or an unknown key is 422 `common.validation_error`, before any write, any upload URL and any multipart start. The space's existence and quota are checked first, so an unknown space (404) or a full one (409 `spaces.quota_exceeded`) may answer before the tag does. The tags decide what a later same-name completion replaces."
       required: [space_id, name, content_type, size_bytes]
-      properties: { space_id: {type: string, format: uuid, description: "The space this file belongs to. A file never moves between spaces, so this is the only moment its owner can be stated; it is also what the per-space byte quota is charged against."}, name: {type: string, maxLength: 255}, content_type: {type: string}, size_bytes: {type: integer, minimum: 0}, tags: { $ref: "#/components/schemas/FileTagsIn" } }
+      properties: { space_id: {type: string, format: uuid, description: "The space this file belongs to. A file never moves between spaces, so this is the only moment its owner can be stated; it is also what the per-space byte quota is charged against."}, name: {type: string, maxLength: 255}, content_type: {type: string, description: "A `type/subtype` MIME type. Well-formed parameters are accepted and dropped (`text/plain; charset=utf-8` is stored as `text/plain`); the bare type must be on the allowed list."}, size_bytes: {type: integer, minimum: 0}, tags: { $ref: "#/components/schemas/FileTagsIn" } }
     FileRegisterOut:
       type: object
       properties: { file_id: {type: string, format: uuid}, upload_url: {type: string}, expires_in: {type: integer} }

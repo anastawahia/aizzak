@@ -38,7 +38,12 @@ from app.modules.conversations.domain.events import (
     ConversationStarted,
     MessageAppended,
 )
-from app.modules.conversations.domain.value_objects import AgentKey, ConversationKind
+from app.modules.conversations.domain.value_objects import (
+    MAX_CITATIONS,
+    AgentKey,
+    ConversationKind,
+)
+from app.modules.conversations.ports.inbound import CitationRef
 from tests.unit.support_conversations import StubModelCatalog
 
 # The space every thread here is opened in, and the space a ready file is in
@@ -356,6 +361,133 @@ async def test_append_message_rejects_invalid_role() -> None:
     conversation = await _seed_conversation(conversations)
     with pytest.raises(ValidationError):
         await AppendMessage(conversations).execute(_ctx(), conversation.id, role="bogus", text="hi")
+
+
+_CITE_DOC = "0190aaaa-0000-7000-8000-000000000001"
+_CITE_CHUNK = "0190bbbb-0000-7000-8000-000000000001"
+
+
+def _ref(rank: int = 1, **overrides: object) -> CitationRef:
+    fields: dict[str, object] = {
+        "document_id": _CITE_DOC,
+        "file_name": "manual.pdf",
+        "page": 2,
+        "chunk_id": _CITE_CHUNK,
+        "rank": rank,
+    }
+    fields.update(overrides)
+    return CitationRef(**fields)  # type: ignore[arg-type]
+
+
+async def test_the_service_stores_and_returns_citations_in_order() -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+    service = _threads(conversations)
+    refs = (_ref(1), _ref(2, file_name=None, page=None))
+
+    appended = await service.append(
+        _ctx(), conversation.id, role="assistant", text="a", citations=refs
+    )
+
+    assert appended.citations == refs
+    stored = conversations.messages[conversation.id][0]
+    assert stored.citations is not None
+    assert [c.rank for c in stored.citations] == [1, 2]
+
+
+async def test_an_empty_citation_list_is_stored_as_empty_not_none() -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+
+    message, _ = await AppendMessage(conversations).execute(
+        _ctx(), conversation.id, role="assistant", text="a", citations=()
+    )
+
+    assert message.citations == ()
+
+
+async def test_citations_on_a_user_message_are_a_loud_validation_error() -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+
+    with pytest.raises(ValidationError):
+        await AppendMessage(conversations).execute(
+            _ctx(), conversation.id, role="user", text="q", citations=(_ref(),)
+        )
+    assert conversations.messages.get(conversation.id, []) == []
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        _ref(document_id="doc-1"),
+        _ref(rank=0),
+        _ref(file_name="a" * 256),
+        _ref(page=0),
+    ],
+)
+async def test_a_malformed_citation_is_dropped_and_the_message_is_still_saved(
+    bad: CitationRef,
+) -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+
+    message, events = await AppendMessage(conversations).execute(
+        _ctx(), conversation.id, role="assistant", text="the answer", citations=(_ref(), bad)
+    )
+
+    assert message.citations is None
+    assert message.content.text == "the answer"
+    assert len(events) == 1
+    assert conversations.messages[conversation.id] == [message]
+
+
+async def test_more_than_the_maximum_is_dropped_and_exactly_the_maximum_is_kept() -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+    append = AppendMessage(conversations)
+
+    over, _ = await append.execute(
+        _ctx(),
+        conversation.id,
+        role="assistant",
+        text="a",
+        citations=tuple(_ref(i + 1) for i in range(MAX_CITATIONS + 1)),
+    )
+    at_cap, _ = await append.execute(
+        _ctx(),
+        conversation.id,
+        role="assistant",
+        text="b",
+        citations=tuple(_ref(i + 1) for i in range(MAX_CITATIONS)),
+    )
+
+    assert over.citations is None
+    assert at_cap.citations is not None
+    assert len(at_cap.citations) == MAX_CITATIONS
+
+
+async def test_a_256_character_file_name_drops_the_citations_not_the_message() -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+
+    message, _ = await AppendMessage(conversations).execute(
+        _ctx(), conversation.id, role="assistant", text="a", citations=(_ref(file_name="a" * 256),)
+    )
+
+    assert message.citations is None
+
+
+async def test_citations_ride_the_pages_of_list_messages() -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+    append = AppendMessage(conversations)
+    await append.execute(_ctx(), conversation.id, role="user", text="q")
+    await append.execute(_ctx(), conversation.id, role="assistant", text="a", citations=(_ref(),))
+
+    page = await ListMessages(conversations).execute(_ctx(), conversation.id, limit=10, cursor=None)
+
+    assert [m.citations is None for m in page.data] == [True, False]
 
 
 # --------------------------------------------------------------------------- #

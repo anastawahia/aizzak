@@ -39,12 +39,15 @@ persistence path shared with ``POST /agents/{key}/invoke``.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from fastapi import APIRouter, Depends, Request
 from starlette.responses import StreamingResponse
 
 from app.api.middleware.rbac import require
 from app.api.v1.dependencies import Context, Services, current_principal
 from app.api.v1.dto.conversations import (
+    Citation,
     ConversationCreateIn,
     ConversationFileIn,
     ConversationFileOut,
@@ -55,6 +58,7 @@ from app.api.v1.dto.conversations import (
     MessageOut,
 )
 from app.api.v1.dto.pagination import DEFAULT_LIMIT, Cursor, Limit, Page, PageMeta
+from app.api.v1.idempotency import IdempotencyKey, idempotent
 from app.api.v1.sse import SSE_HEADERS, SSE_MEDIA_TYPE, sse_stream
 from app.framework.agent_runtime.base_agent import AgentRequest
 from app.modules.access.domain.value_objects import Permission
@@ -86,11 +90,20 @@ def _to_conversation_out(conversation: Conversation) -> ConversationOut:
     )
 
 
+def _citations_out(citations: Sequence[object] | None) -> list[Citation] | None:
+    # Works for both sources -- domain `Citation` (reads) and port `CitationRef`
+    # (the orchestrator's handle) -- because both carry the same five attributes.
+    if citations is None:
+        return None
+    return [Citation.model_validate(c, from_attributes=True) for c in citations]
+
+
 def _to_message_out(message: Message) -> MessageOut:
     return MessageOut(
         id=message.id,
         role=message.role.value,
         content={"text": message.content.text, "attachments": list(message.content.attachments)},
+        citations=_citations_out(message.citations),
         token_count=message.token_count,
         seq=message.seq,
         created_at=message.created_at,
@@ -117,6 +130,7 @@ def appended_to_message_out(message: AppendedMessage) -> MessageOut:
         id=message.id,
         role=message.role,
         content={"text": message.text, "attachments": list(message.attachments)},
+        citations=_citations_out(message.citations),
         token_count=message.token_count,
         seq=message.seq,
         created_at=message.created_at,
@@ -169,7 +183,10 @@ async def list_conversations(
 
 @router.post("", status_code=201, dependencies=[Depends(require(Permission.CONVERSATIONS_WRITE))])
 async def create_conversation(
-    body: ConversationCreateIn, services: Services, ctx: Context
+    body: ConversationCreateIn,
+    services: Services,
+    ctx: Context,
+    idempotency_key: IdempotencyKey = None,
 ) -> ConversationOut:
     """Open a thread under one agent, inside one space (201 + the bare
     resource).
@@ -179,14 +196,31 @@ async def create_conversation(
     ``ports/spaces.py`` (step 7) before writing, because a thread filed under
     a space that does not exist would be invisible to every listing forever —
     the asymmetry the listing route above documents from the other side.
+
+    ``Idempotency-Key`` makes a retry after a timeout safe: the same key and
+    body replays the FIRST thread instead of opening a second one. The replay
+    is the response as it was at creation, so a title renamed since is not
+    reflected in it — ``GET /conversations/{id}`` is the current state.
     """
-    conversation, _events = await services.conversations.start.execute(
+
+    async def _start() -> ConversationOut:
+        conversation, _events = await services.conversations.start.execute(
+            ctx,
+            space_id=body.space_id,
+            agent_key=body.agent_key,
+            title=body.title,
+        )
+        return _to_conversation_out(conversation)
+
+    return await idempotent(
+        services.idempotency,
         ctx,
-        space_id=body.space_id,
-        agent_key=body.agent_key,
-        title=body.title,
+        endpoint="POST /conversations",
+        key=idempotency_key,
+        body=body,
+        model=ConversationOut,
+        run=_start,
     )
-    return _to_conversation_out(conversation)
 
 
 @router.get("/{conversation_id}", dependencies=[Depends(require(Permission.CONVERSATIONS_READ))])

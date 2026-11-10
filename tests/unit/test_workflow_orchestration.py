@@ -73,7 +73,11 @@ from app.modules.conversations.application.use_cases import (
     StartConversation,
 )
 from app.modules.conversations.domain.entities import Conversation, Message
-from app.modules.conversations.ports.inbound import AppendedMessage, StartedConversation
+from app.modules.conversations.ports.inbound import (
+    AppendedMessage,
+    CitationRef,
+    StartedConversation,
+)
 from app.modules.usage.ports.inbound import LimitDecision, UsageCharge
 from tests.unit.support_access import build_authorization
 
@@ -168,6 +172,8 @@ class _FakeThreads:
         self.spaces: list[str | None] = []
         # 6.1-د-1: the run's transcript, as it was actually written.
         self.appended: list[tuple[str, str, str, tuple[str, ...], int | None]] = []
+        # th-1 -- the `citations` each `append` received, apart from `appended`.
+        self.citations: list[tuple[CitationRef, ...] | None] = []
         self._raises = raises
         self._append_raises = append_raises
         self._fail_role = fail_role
@@ -197,10 +203,12 @@ class _FakeThreads:
         text: str,
         attachments: tuple[str, ...] = (),
         token_count: int | None = None,
+        citations: tuple[CitationRef, ...] | None = None,
     ) -> AppendedMessage:
         if self._append_raises is not None and self._fail_role in (None, role):
             raise self._append_raises
         self.appended.append((conversation_id, role, text, attachments, token_count))
+        self.citations.append(citations)
         self._seq += 1
         return AppendedMessage(
             id=f"msg-{self._seq}",
@@ -211,6 +219,7 @@ class _FakeThreads:
             token_count=token_count,
             seq=self._seq,
             created_at=utc_now(),
+            citations=citations,
         )
 
 
@@ -231,6 +240,29 @@ class _EchoAgent(BaseAgent):
 
 class _EchoB(_EchoAgent):
     metadata = _metadata("echo_b", capabilities=frozenset({"chat"}))
+
+
+class _CitingStep(_EchoAgent):
+    """A step whose ``final`` lists sources -- they must NOT be stored (th-1)."""
+
+    metadata = _metadata("citing_step", capabilities=frozenset({"chat"}))
+
+    async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        yield AgentEvent(
+            type="final",
+            data={
+                "text": "step output",
+                "citations": [
+                    {
+                        "document_id": "0190aaaa-0000-7000-8000-000000000001",
+                        "file_name": "a.pdf",
+                        "page": 1,
+                        "chunk_id": "0190bbbb-0000-7000-8000-000000000001",
+                        "rank": 1,
+                    }
+                ],
+            },
+        )
 
 
 class _Mediaish(_EchoAgent):
@@ -524,6 +556,20 @@ async def test_each_completed_step_is_appended_to_the_thread_in_order() -> None:
     # than dropped — the same choice `_turn_content` makes for a media reply.
     written = [json.loads(text)["who"] for _cid, role, text, _a, _t in threads.appended[1:]]
     assert written == ["echo_a", "echo_b"]
+
+
+async def test_step_outputs_are_stored_without_citations() -> None:
+    """th-1 / A-4: a workflow step's output is not an answered turn, so no
+    citations are recorded for it even when its ``final`` lists some."""
+    orchestrator, _, threads = _orchestrator(
+        agents=[_CitingStep], definitions=[_definition("citing_step")]
+    )
+
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {"text": "go"}, space_id=_SPACE)
+    await _drain(run)
+
+    assert _roles(threads) == ["user", "assistant"]
+    assert threads.citations == [None, None]
 
 
 async def test_a_halted_run_records_only_the_steps_that_produced_output() -> None:

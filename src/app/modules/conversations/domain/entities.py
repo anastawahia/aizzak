@@ -18,9 +18,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from app.modules.conversations.domain.errors import ConversationDeletedError
+from app.modules.conversations.domain.errors import (
+    ConversationDeletedError,
+    InvalidConversationInput,
+)
 from app.modules.conversations.domain.value_objects import (
+    MAX_CITATIONS,
     AgentKey,
+    Citation,
     ConversationKind,
     MessageContent,
     MessageRole,
@@ -177,12 +182,21 @@ class Conversation:
         content: MessageContent,
         token_count: int | None,
         now: datetime,
+        *,
+        citations: tuple[Citation, ...] | None = None,
     ) -> Message:
         """Append a new message, assigning the next gap-free ``seq`` (INV-CV1).
 
-        Rejected once the conversation is soft-deleted (INV-CV3).
+        Rejected once the conversation is soft-deleted (INV-CV3). INV-CV4:
+        citations are carried by ASSISTANT messages only, and at most
+        ``MAX_CITATIONS`` of them; otherwise ``InvalidConversationInput``.
         """
         self._guard_not_deleted()
+        if citations is not None:
+            if role is not MessageRole.ASSISTANT:
+                raise InvalidConversationInput("only assistant messages carry citations")
+            if len(citations) > MAX_CITATIONS:
+                raise InvalidConversationInput(f"at most {MAX_CITATIONS} citations per message")
         self.message_count += 1
         seq = self.message_count
         self.updated_at = now
@@ -196,6 +210,7 @@ class Conversation:
             seq=seq,
             created_at=now,
             deleted_at=None,
+            citations=citations,
         )
 
     def _guard_not_deleted(self) -> None:
@@ -216,6 +231,9 @@ class Message:
     seq: int
     created_at: datetime
     deleted_at: datetime | None
+    # th-1 -- LAST and defaulted, so every existing constructor call stays valid.
+    # None = not recorded; () = the agent stated there are no sources.
+    citations: tuple[Citation, ...] | None = None
 
     def soft_delete(self, now: datetime) -> None:
         """Soft-delete the message. Idempotent: a second call is a no-op."""

@@ -41,13 +41,19 @@ from app.modules.conversations.domain.events import (
     MessageAppended,
 )
 from app.modules.conversations.domain.value_objects import (
+    MAX_CITATIONS,
     AgentKey,
+    Citation,
     ConversationKind,
     MessageContent,
     MessageRole,
 )
 from app.modules.conversations.ports.files import ReadableFiles
-from app.modules.conversations.ports.inbound import AppendedMessage, StartedConversation
+from app.modules.conversations.ports.inbound import (
+    AppendedMessage,
+    CitationRef,
+    StartedConversation,
+)
 from app.modules.conversations.ports.repository import ConversationRepository
 from app.modules.conversations.ports.spaces import ActiveSpaces
 
@@ -120,6 +126,43 @@ class StartConversation:
         return conversation, (event,)
 
 
+def _recordable_citations(
+    role: MessageRole, refs: Sequence[CitationRef] | None
+) -> tuple[Citation, ...] | None:
+    """th-1 / FR-8 -- the citations this message will store.
+
+    - refs is None                      -> None
+    - role is not ASSISTANT             -> raise ValidationError (a caller bug, loud)
+    - len(refs) > MAX_CITATIONS         -> None   (dropped, the append goes on)
+    - any Citation(...) raises          -> None   (dropped, the append goes on)
+    - otherwise                         -> tuple in the SAME order, values verbatim
+
+    Dropping, not raising, is deliberate and is the ONLY lenient branch in
+    this use case: the text is the turn, and the citations annotate it. A
+    malformed annotation must never cost the user the answer. It runs BEFORE
+    any I/O, like MessageContent's validation.
+    """
+    if refs is None:
+        return None
+    if role is not MessageRole.ASSISTANT:
+        raise ValidationError("only assistant messages carry citations")
+    if len(refs) > MAX_CITATIONS:
+        return None
+    try:
+        return tuple(
+            Citation(
+                document_id=ref.document_id,
+                file_name=ref.file_name,
+                page=ref.page,
+                chunk_id=ref.chunk_id,
+                rank=ref.rank,
+            )
+            for ref in refs
+        )
+    except ConversationError:
+        return None
+
+
 class AppendMessage:
     """Append a message to an existing, non-deleted conversation (INV-CV1/CV3)."""
 
@@ -135,6 +178,7 @@ class AppendMessage:
         text: str,
         attachments: tuple[str, ...] = (),
         token_count: int | None = None,
+        citations: Sequence[CitationRef] | None = None,
     ) -> tuple[Message, tuple[ConversationEvent, ...]]:
         try:
             role_enum = MessageRole(role)
@@ -144,6 +188,7 @@ class AppendMessage:
             content = MessageContent(text=text, attachments=attachments)
         except ConversationError as exc:
             raise ValidationError(str(exc)) from exc
+        recorded = _recordable_citations(role_enum, citations)
 
         conversation = await self._conversations.get(ctx, conversation_id)
         if conversation is None:
@@ -151,7 +196,9 @@ class AppendMessage:
 
         now = utc_now()
         try:
-            message = conversation.append_message(new_uuid7(), role_enum, content, token_count, now)
+            message = conversation.append_message(
+                new_uuid7(), role_enum, content, token_count, now, citations=recorded
+            )
         except ConversationDeletedError as exc:
             raise ConflictError(str(exc)) from exc
 
@@ -808,6 +855,7 @@ class ConversationService:
         text: str,
         attachments: tuple[str, ...] = (),
         token_count: int | None = None,
+        citations: tuple[CitationRef, ...] | None = None,
     ) -> AppendedMessage:
         message, _events = await self._append.execute(
             ctx,
@@ -816,6 +864,7 @@ class ConversationService:
             text=text,
             attachments=attachments,
             token_count=token_count,
+            citations=citations,
         )
         return AppendedMessage(
             id=message.id,
@@ -826,6 +875,20 @@ class ConversationService:
             token_count=message.token_count,
             seq=message.seq,
             created_at=message.created_at,
+            citations=(
+                None
+                if message.citations is None
+                else tuple(
+                    CitationRef(
+                        document_id=c.document_id,
+                        file_name=c.file_name,
+                        page=c.page,
+                        chunk_id=c.chunk_id,
+                        rank=c.rank,
+                    )
+                    for c in message.citations
+                )
+            ),
         )
 
     async def start(

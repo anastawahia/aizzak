@@ -319,7 +319,7 @@ def test_the_idempotency_header_is_declared_on_exactly_the_contracts_operations(
     ``/openapi.json`` had no way to send it at all.
 
     Both directions, deliberately: forward stops a handler from advertising
-    idempotency it does not implement, backward stops one of the three from
+    idempotency it does not implement, backward stops one of the declared operations from
     quietly losing the header again.
     """
     assert _declaring(LIVE, "Idempotency-Key", spec=False) == _declaring(
@@ -484,6 +484,30 @@ def test_the_contract_publishes_every_field_of_the_job_a_client_polls() -> None:
 
     assert set(contract) == set(published)
     assert "updated_at" in contract
+
+
+def test_the_contract_publishes_message_citations_as_the_app_serves_them() -> None:
+    """th-1 -- ``MessageOut.citations`` and the ``Citation`` schema in
+    ``openapi.yaml`` are the ones the app serves, and the key is always there."""
+    schemas = SPEC["components"]["schemas"]
+    live = LIVE["components"]["schemas"]
+
+    assert set(schemas["MessageOut"]["properties"]) == set(live["MessageOut"]["properties"])
+    assert "citations" in schemas["MessageOut"]["properties"]
+    assert "citations" in live["MessageOut"]["required"]  # present on every response
+    assert set(schemas["Citation"]["properties"]) == set(live["Citation"]["properties"])
+    assert set(schemas["Citation"]["required"]) == {
+        "document_id",
+        "file_name",
+        "page",
+        "chunk_id",
+        "rank",
+    }
+    assert schemas["Citation"]["properties"]["document_id"]["format"] == "uuid"
+    assert schemas["Citation"]["properties"]["chunk_id"]["format"] == "uuid"
+    assert schemas["MessageOut"]["properties"]["citations"]["items"] == {
+        "$ref": "#/components/schemas/Citation"
+    }
 
 
 def test_a_timestamp_on_the_wire_ends_in_z() -> None:

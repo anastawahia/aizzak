@@ -20,6 +20,15 @@ _MAX_AGENT_KEY_LEN = 64
 # letters/digits/underscore/hyphen (06-domain-models §4).
 _AGENT_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
+# th-1 -- at most this many citations on one message; more is malformed (stored NULL).
+MAX_CITATIONS = 50
+_MAX_CITED_FILE_NAME_LEN = 255  # the files module's own bound (files/domain/value_objects.py)
+# Canonical 8-4-4-4-12 text. Matched, never normalised: the stored string must
+# equal the one on the `final` frame.
+_UUID_TEXT_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
 
 class ConversationKind(StrEnum):
     """Whether a conversation is threaded under an agent or a workflow run."""
@@ -81,3 +90,45 @@ class MessageContent:
             raise InvalidConversationInput("message content requires text or an attachment")
         object.__setattr__(self, "text", trimmed_text)
         object.__setattr__(self, "attachments", attachments)
+
+
+def _require_uuid_text(name: str, value: object) -> None:
+    if not isinstance(value, str) or not _UUID_TEXT_RE.match(value):
+        raise InvalidConversationInput(f"citation {name} must be a UUID")
+
+
+def _require_positive_int(name: str, value: object) -> None:
+    # `type(...) is int` rejects bool (True is an int in Python).
+    if type(value) is not int or value < 1:
+        raise InvalidConversationInput(f"citation {name} must be an integer >= 1")
+
+
+@dataclass(frozen=True, slots=True)
+class Citation:
+    """One source an assistant reply was answered from (th-1, 06 section 4).
+
+    A SNAPSHOT taken at answer time: ``file_name`` is the name the chunk
+    carried then, and is never refreshed from ``files``. Values are stored
+    verbatim -- nothing is stripped, lower-cased or re-ranked.
+    """
+
+    document_id: str
+    file_name: str | None
+    page: int | None
+    chunk_id: str
+    rank: int
+
+    def __post_init__(self) -> None:
+        _require_uuid_text("document_id", self.document_id)
+        _require_uuid_text("chunk_id", self.chunk_id)
+        if self.file_name is not None and (
+            not isinstance(self.file_name, str)
+            or not self.file_name
+            or len(self.file_name) > _MAX_CITED_FILE_NAME_LEN
+        ):
+            raise InvalidConversationInput(
+                f"citation file_name must be 1..{_MAX_CITED_FILE_NAME_LEN} characters"
+            )
+        if self.page is not None:
+            _require_positive_int("page", self.page)
+        _require_positive_int("rank", self.rank)
