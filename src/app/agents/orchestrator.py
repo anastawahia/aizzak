@@ -100,6 +100,7 @@ from app.modules.conversations.ports.inbound import (
     AppendedMessage,
     CitationRef,
     ConversationThreads,
+    FallbackRef,
 )
 from app.modules.usage.ports.inbound import UsageCapture, UsageCharge, UsageEnforcement
 
@@ -426,15 +427,14 @@ def _declared_citations(data: Json) -> _DeclaredCitations:
 # ب-10 (خطة السيناريوهات section 8، ف-8) — the sentence appended to a reply
 # the PLATFORM cut short, in ق-هـ's wording.
 #
-# A sentence in the body and NOT a field on the message, which is decision 1
-# of the item: when it was taken `MessageContent` had no structured half (the
-# identical constraint ف-4 and ف-1أ each ran into from their own side). ث-1
-# has since given the message one -- `messages.citations`, a column of its
-# own, not a key in `content` -- so the "column and migration" part of the
-# cost is now a precedent already paid; the "rendering rule in every client"
-# part still stands, and turning this marker into a field is ث-2, not decided
-# here. The sentence stays: one line of text states it to every reader that
-# already exists.
+# Decision 1 of the item was "a sentence in the body and NOT a field on the
+# message", because `MessageContent` had no structured half. ث-2 overturned it
+# by owner decision (2026-11-10): the message now ALSO carries
+# `messages.status` (`partial` for everything `_persist_partial` writes), a
+# column of its own like `messages.citations` (ث-1), not a key in `content`.
+# The sentence stays: it is one line of text that states the cut to every
+# reader that does not know the field, and to rows saved before it existed,
+# which have no status at all.
 _INCOMPLETE_MARKER_AR = "⚠️ انقطعت الإجابةُ قبل اكتمالها."
 _INCOMPLETE_MARKER_EN = "⚠️ This answer was cut off before it finished."
 # Kept apart from both sentences so neither Arabic literal has to carry an
@@ -445,9 +445,11 @@ _MARKER_GAP = "\n\n"
 # not answer and the local one did (`_Fallback`). It goes out three ways: a
 # `notice` frame BEFORE the local model's first token, a `fallback` key on the
 # `final` frame, and this same sentence at the head of the stored reply — the
-# last for ب-10's reason exactly (see its note on `messages.citations`), and
-# a reader returning to the thread must still be able to see why this answer
-# is not from the model the conversation is pinned to. At the HEAD, unlike
+# last for ب-10's reason exactly (the sentence reaches every reader that does
+# not know the field), and ث-2 added `messages.fallback`, the same
+# `describe()` value as that frame's key, for the clients that do. A reader
+# returning to the thread must still be able to see why this answer is not
+# from the model the conversation is pinned to. At the HEAD, unlike
 # ب-10's marker: that one remarks on how an answer ended, this one on who
 # wrote all of it, and the reader should know before reading.
 _FALLBACK_NOTICE_AR = "⚠️ تعذّر الوصولُ إلى النموذج السحابيّ، فأجاب النموذجُ المحلّيّ عن هذا السؤال."
@@ -483,6 +485,11 @@ _CUT_TIMEOUT = "timeout"
 _CUT_ERROR = "error"
 _CUT_ABANDONED = "abandoned"
 
+# th-2 -- the message status each writer states. Constants, never derived
+# from the text (FR-3): the code path that writes the message is the fact.
+_STATUS_COMPLETE = "complete"
+_STATUS_PARTIAL = "partial"
+
 
 def _mark_incomplete(text: str) -> str:
     """``text`` with the cut-off notice appended (ب-10).
@@ -509,9 +516,10 @@ def _turn_content(data: Json) -> tuple[str, tuple[str, ...]]:
     either inventing a sentence for it or silently dropping the turn. It reads
     poorly in a chat UI, and that is the honest signal of the real gap:
     a message still has no GENERAL structured ``data`` field (06 §4 / 01 §2.4),
-    so a structured reply has nowhere else to go. It has exactly one structured
-    field for one known shape, ``citations`` (ث-1), written separately by
-    ``_persist_reply``. Recorded as a doc-sync recommendation rather than
+    so a structured reply has nowhere else to go. It has three structured
+    fields, each for one known shape and each its own column: ``citations``
+    (ث-1), and ``status`` and ``fallback`` (ث-2), all written separately by
+    the persisting methods. Recorded as a doc-sync recommendation rather than
     papered over.
     """
     raw_text = data.get("text")
@@ -734,6 +742,17 @@ class _Fallback:
             "to": {"provider": self.target.provider.provider, "model": self.target.model},
         }
 
+    def ref(self) -> FallbackRef:
+        """``describe()``'s four values as the conversations port takes them
+        (th-2): the same four attributes, so the stored fallback equals
+        ``final.fallback``."""
+        return FallbackRef(
+            from_provider=self.primary.provider.provider,
+            from_model=self.primary.model,
+            to_provider=self.target.provider.provider,
+            to_model=self.target.model,
+        )
+
     def billed(self) -> _BilledRoute:
         """The route a turn's charge is recorded and PRICED against. The local
         one only when it produced EVERYTHING; a turn that mixed the two is
@@ -912,6 +931,28 @@ def _with_fallback_notice(text: str, fallback: _Fallback | None) -> str:
     if not text.strip():
         return fallback.notice
     return f"{fallback.notice}{_MARKER_GAP}{text}"
+
+
+def _stored_fallback(fallback: _Fallback | None) -> FallbackRef | None:
+    """The fallback a message records (th-2): the SAME condition as
+    ``_with_fallback_notice`` (``fallback.switched``), so "the text starts with
+    the notice" and "fallback is not null" cannot disagree. A turn the primary
+    started and then lost never switched, and records None."""
+    if fallback is None or not fallback.switched:
+        return None
+    return fallback.ref()
+
+
+def _warn_if_fallback_dropped(
+    conversation_id: Uuid, sent: FallbackRef | None, stored: AppendedMessage
+) -> None:
+    """One warning when the module dropped a fallback it was handed. The
+    conversation id only: no provider or model name in the log."""
+    if sent is not None and stored.fallback is None:
+        _logger.warning(
+            "orchestrator.fallback_not_recorded",
+            extra={"conversation_id": conversation_id},
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1707,6 +1748,9 @@ class AgentOrchestrator:
         and raising here would replace a delivered answer with an error the
         client cannot act on, and would halt the remaining steps on a
         bookkeeping fault.
+
+        The message is stored with ``status=complete`` (ث-2) and no fallback:
+        a step never switches models.
         """
         threads = self._deps.conversations
         if threads is None:  # pragma: no cover - `invoke_workflow` refuses first
@@ -1714,7 +1758,12 @@ class AgentOrchestrator:
         text, attachments = _turn_content(data)
         try:
             await threads.append(
-                ctx, conversation_id, role=_ROLE_ASSISTANT, text=text, attachments=attachments
+                ctx,
+                conversation_id,
+                role=_ROLE_ASSISTANT,
+                text=text,
+                attachments=attachments,
+                status=_STATUS_COMPLETE,
             )
         except Exception as exc:  # never mask a produced output
             _logger.warning(
@@ -2135,7 +2184,9 @@ class AgentOrchestrator:
         reason: str,
     ) -> None:
         """Write what a cut-off turn had already streamed into the thread,
-        marked as incomplete (ب-10, gap ف-8).
+        marked as incomplete (ب-10, gap ف-8). The mark is a sentence in the
+        text AND, since ث-2, a field: ``status=partial``, with ``fallback``
+        when the local model was the one answering at the cut.
 
         **The gap this closes is a disappearing answer.** Persistence hung on
         the ``final`` event alone, so a stream that hit the 600-second cap or
@@ -2180,6 +2231,7 @@ class AgentOrchestrator:
         if threads is None or record.conversation_id is None:
             return
         completion = record.meter.completion_total
+        fallback = _stored_fallback(record.fallback)
         try:
             message = await threads.append(
                 ctx,
@@ -2191,6 +2243,8 @@ class AgentOrchestrator:
                 # came.
                 attachments=(),
                 token_count=completion or None,
+                status=_STATUS_PARTIAL,
+                fallback=fallback,
             )
         except Exception as exc:  # never mask the failure that got us here
             _logger.warning(
@@ -2199,6 +2253,7 @@ class AgentOrchestrator:
                 exc_info=exc,
             )
             return
+        _warn_if_fallback_dropped(record.conversation_id, fallback, message)
         record.message = message
         # ق-5 — a count and a fixed reason name. `chars` and not the text:
         # what is useful is how much was rescued, and the answer itself is
@@ -2313,6 +2368,11 @@ class AgentOrchestrator:
         turn — what this reply cost — not the turn total, which would double
         count the prompt against every message in the thread.
 
+        ``status=complete`` (ث-2) is stated here, by the path that reached
+        ``final``, never read off the text; ``fallback`` is the turn's 6.4
+        switch (the orchestrator's own record, not a key the agent put on the
+        frame), under the same condition as the notice sentence.
+
         **A failed write degrades to the un-enriched event.** By the time a
         ``final`` is in hand the answer has been produced and (for a streaming
         caller) partially delivered; raising here would replace a good answer
@@ -2336,6 +2396,7 @@ class AgentOrchestrator:
                     "reason": "shape",
                 },
             )
+        fallback = _stored_fallback(record.fallback)
         try:
             message = await threads.append(
                 ctx,
@@ -2345,6 +2406,8 @@ class AgentOrchestrator:
                 attachments=attachments,
                 token_count=completion or None,
                 citations=declared.refs,
+                status=_STATUS_COMPLETE,
+                fallback=fallback,
             )
         except Exception as exc:  # never mask a produced answer
             _logger.warning(
@@ -2363,6 +2426,7 @@ class AgentOrchestrator:
                     "reason": "rejected",
                 },
             )
+        _warn_if_fallback_dropped(record.conversation_id, fallback, message)
         record.message = message
         return AgentEvent(
             type=event.type,
