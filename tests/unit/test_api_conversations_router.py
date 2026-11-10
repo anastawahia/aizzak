@@ -1551,3 +1551,61 @@ def test_an_unknown_thread_is_a_404_problem_without_status_or_fallback() -> None
     assert response.status_code == 404
     assert response.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)
     assert "fallback" not in response.json()
+
+
+async def test_every_kind_of_message_keeps_content_to_text_and_attachments() -> None:
+    """AC-3.5: user, complete, partial, switched and legacy rows alike -- the
+    two new fields are siblings of `content`, never keys inside it."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client)
+    _ask(client, conversation_id)  # a user message and a complete reply
+    ctx = _scope_ctx()
+    await stack.service.append(ctx, conversation_id, role="assistant", text="old")
+    await stack.service.append(
+        ctx, conversation_id, role="assistant", text="b", status="partial", fallback=_FALLBACK_REF
+    )
+
+    data = _messages(client, conversation_id)["data"]
+
+    assert len(data) == 4  # type: ignore[arg-type]
+    for message in data:  # type: ignore[attr-defined]
+        assert set(message["content"]) == {"text", "attachments"}
+        assert "status" in message and "fallback" in message
+        assert "citations" in message
+
+
+async def test_another_workspaces_history_is_a_404_with_no_status_or_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC-6.1: a partial, switched message in workspace A is invisible to B."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client)
+    await stack.service.append(
+        _scope_ctx(),
+        conversation_id,
+        role="assistant",
+        text="secret partial",
+        status="partial",
+        fallback=_FALLBACK_REF,
+    )
+    path = f"/api/v1/conversations/{conversation_id}/messages"
+    assert client.get(path, headers=_auth()).status_code == 200  # visible to A
+
+    async def _as_workspace_b(self: _FakeAuth, token: str) -> Principal:
+        return Principal(
+            workspace_id="018f0000-0000-7000-8000-0000000000w2",
+            user_id="018f0000-0000-7000-8000-0000000000u2",
+            roles=frozenset({"owner"}),
+        )
+
+    monkeypatch.setattr(_FakeAuth, "authenticate", _as_workspace_b)
+
+    response = client.get(path, headers=_auth())
+
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)
+    assert "secret partial" not in response.text
+    for leaked in ('status":"partial', 'fallback":{', "gemma3", "gpt-4.1"):
+        assert leaked not in response.text
