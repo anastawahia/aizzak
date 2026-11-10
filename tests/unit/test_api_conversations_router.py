@@ -1299,3 +1299,12 @@ def test_a_bad_token_is_401_on_the_messages_route() -> None:
     response = client.get("/api/v1/conversations/x/messages", headers=_auth("bad"))
 
     assert response.status_code == 401
+
+
+def test_no_token_is_401_on_the_messages_route() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+
+    response = client.get("/api/v1/conversations/x/messages")
+
+    assert response.status_code == 401

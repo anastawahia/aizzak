@@ -23,9 +23,11 @@ two apart on purpose.
 
 No index: the column is a projection read alongside its row, never a predicate.
 
-No CHECK constraint: the rules (UUID-shaped ids, ``rank >= 1``, the cap on the
-list) live in ``domain.Citation``. A CHECK on ``jsonb`` would restate half of
-them in a second language and drift from the first.
+No CHECK constraint: the rules (UUID-shaped ids, ``rank >= 1``) live in
+``domain.Citation``. A CHECK on ``jsonb`` would restate half of
+them in a second language and drift from the first. The cap on the
+list is INV-CV4, enforced in ``Conversation.append_message`` and
+``_recordable_citations``, not by ``Citation``.
 
 Copied data: ``file_name`` is a snapshot of what the chunk carried at answer
 time (ق-3), never refreshed from the ``files`` module, so a later rename or

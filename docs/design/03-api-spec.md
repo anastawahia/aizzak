@@ -19,7 +19,7 @@
 |--------|---------------|----------|
 | Workspace | `/api/v1/workspace` | GET · PATCH |
 | Spaces | `/api/v1/spaces` | GET(list) · POST · PATCH `{id}` · DELETE `{id}` |
-| Agents | `/api/v1/agents` | GET(list) · GET(one) · POST `{key}/invoke` |
+| Agents | `/api/v1/agents` | GET(list) · GET(one) · POST `{key}/invoke` — القائمة تُرشَّح بصلاحيات المستدعي: لا يظهر وكيلٌ إلا إذا منحت أدوارُه كلَّ `required_permissions` له (فالـ`viewer` يرى صفحة فارغة)، و`GET(one)` غير مرشَّح |
 | Models | `/api/v1/models` | GET(list) |
 | Conversations | `/api/v1/conversations` | GET(list by agent) · POST · GET · PATCH · PUT `{id}/model` · DELETE · GET/POST `…/messages` · DELETE `…/messages/{message_id}` · GET/POST `…/files` · DELETE `…/files/{file_id}` |
 | Files | `/api/v1/files` | POST(register) · POST `/multipart` · GET `{id}/upload` · POST `{id}/upload/part-urls` · POST `{id}/complete` · GET(list) · GET · PATCH · PUT `{id}/tags` · DELETE |

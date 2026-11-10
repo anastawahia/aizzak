@@ -319,7 +319,7 @@ def test_the_idempotency_header_is_declared_on_exactly_the_contracts_operations(
     ``/openapi.json`` had no way to send it at all.
 
     Both directions, deliberately: forward stops a handler from advertising
-    idempotency it does not implement, backward stops one of the three from
+    idempotency it does not implement, backward stops one of the declared operations from
     quietly losing the header again.
     """
     assert _declaring(LIVE, "Idempotency-Key", spec=False) == _declaring(

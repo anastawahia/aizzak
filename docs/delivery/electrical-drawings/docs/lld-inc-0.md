@@ -662,7 +662,7 @@ async def sign_file_upload_parts(
 | الرمز | الحالة | العنوان (`title`) | موضع الإصدار |
 |---|---|---|---|
 | `files.multipart_required` | 413 | `File needs a multipart upload` | `RegisterUpload.execute`، الوضع `SINGLE` |
-| `files.upload_incomplete` | 409 | `Multipart upload is incomplete` | `MultipartUploadService.assemble` |
+| `files.upload_incomplete` | 409 | `Upload is incomplete` | `MultipartUploadService.assemble` |
 | `files.upload_expired` | 409 | `Multipart upload no longer exists` | `MultipartUploadService.progress` و`assemble` |
 | `knowledge.too_large` | 422 | `Document exceeds the indexing size limit` | `WorkerDocumentContentResolver.resolve` |
 
