@@ -51,7 +51,7 @@
 3. **`app.workers.bootstrap`:** هذا **كاتب لم يذكره جدول `requirements.md` §5.1.** عاملا تسليم الملخص يكتبان رسالة مساعد عبر `AppendMessage` مباشرة:
    - `build_knowledge_summary_delivery_handler`، `bootstrap.py:1079`؛
    - و`build_knowledge_summary_failure_handler`، `bootstrap.py:1174`.
-   
+
    كلاهما يمرر الآن `status="complete"` (د‑ت6).
 4. **`app.api`:**
    - `MessageOut.status` و`MessageOut.fallback` بجانب `content` و`citations`.
@@ -355,7 +355,7 @@ class AppendMessage:
   3. ثم `_recordable_citations`؛
   4. ثم `_recordable_status`؛
   5. ثم `_recordable_fallback`.
-  
+
   كلها قبل `self._conversations.get(...)`، فالرفض لا يكتب صفاً ولا يقرأ شيئاً (AC‑1.13).
 - **نقل الخطأ:** `conversation.append_message(...)` يمرر `status=` و`fallback=`. و`InvalidConversationInput` من INV‑CV5 لا يصل عملياً، لأن الفحص المسبق يسبقه. وإن وصل، يُحوَّل إلى `ValidationError` في الكتلة نفسها التي تحوّل `ConversationDeletedError` إلى `ConflictError`.
 - **`ConversationService.append`:**
@@ -712,7 +712,7 @@ def downgrade() -> None:
      - وتمديد `test_conversations_schema_parity.py`؛
      - و`test_message_status_migration_live.py`؛
      - وتمديد `test_conversations_repository_rls.py`.
-     
+
      يتفق مع backend-developer على الأسماء والأنواع: `status` من نوع `text`، و`fallback` من نوع `jsonb`، والقيد `ck_messages_status`.
    - **(ب) backend-developer، بالترتيب:**
      1. **domain:** `MessageStatus`، و`MessageFallback`، والحقلان، وINV‑CV5، واختبارات domain.
@@ -730,7 +730,7 @@ def downgrade() -> None:
    - تطبيق `0008` عبر `provision`؛
    - ورحلة `downgrade`/`upgrade` (`MIG`)؛
    - وAC‑6.2، والذهاب والإياب الحي.
-   
+
    يجب أن تكون نتيجته معروفة قبل بوابة ②.
 
 **المراحل التي تُتخطى:**

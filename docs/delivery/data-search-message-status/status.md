@@ -14,12 +14,12 @@
 | 2 | بوابة ① النطاق | بشري | ✅ | | موافقة 2026‑11‑10، انظر القرارات |
 | 3 | UX | ux-designer | ⏭ | | خلفية فقط، لا واجهة في هذا المستودع |
 | 4 | التصميم | software-architect | ✅ | design.md | لا بنود ⚠️. ترحيل `0008_message_status` (`status text` + CHECK `NOT VALID`، `fallback jsonb`). كاتبان إضافيان في `workers/bootstrap.py` (رسائل الملخص) يأخذان `complete`، يُبلَّغ مالك المنتج عند القبول |
-| 5 | البيانات | data-engineer | 🟡 | ترحيل | يكتب الملفات بلا commit، وتُحفظ مع عمود الـ ORM في مرحلة الخلفية (اختبار parity) |
-| 6 | الخلفية | backend-developer | ⏸ | فرع + commits | |
+| 5 | البيانات | data-engineer | ✅ | `0008_message_status.py` (بلا commit) | البوابات 1–4 خضراء، رأس واحد لسلسلة conversations. اختبار parity يفشل في 4 اختبارات كما هو متوقع حتى تُضاف أعمدة الـ ORM. اختبار ذهاب وإياب للترحيل (`test_message_status_migration_live.py`) في CI فقط |
+| 6 | الخلفية | backend-developer | ✅ | `a191011`، `39bbbb1`، `44ce03e`، `4503184` | البوابات 1–5 خضراء (8914 passed، 37 skipped)، أعاد المنسّق 1–4 و`test-rules.sh` OK (31 قاعدة). مسار الـ fallback الحقيقي (AC‑2.1…2.4، AC‑4.7، فرع fallback من AC‑4.4) متروك لـ QA. AC‑6.1 بلا اختبار 404 جديد لمساحة أخرى |
 | 7 | الواجهة | frontend-developer | ⏭ | | لا واجهة في هذا المستودع |
-| 8 | الجودة | qa-engineer | ⏸ | test-plan.md + اختبارات | |
-| 9 | مراجعة الشيفرة | code-reviewer | ⏸ | review.md | |
-| 10 | المراجعة الأمنية | security-reviewer | ⏸ | security-review.md | |
+| 8 | الجودة | qa-engineer | ✅ | test-plan.md، `2ade90b` | PASS. 48/48 مغطاة (40 آلياً محلياً، 3 جزئياً في CI الحي، 5 مراجعة وثائق). 14 اختباراً جديداً. البوابات 1–6 خضراء (8928 passed). لا أخطاء حاجبة. شرط: نجاح CI `integration` |
+| 9 | مراجعة الشيفرة | code-reviewer | ✅ | review.md | PASS، لا حاجب. مهمتان (اختبار AC‑3.3 بنص فيه جملة الانقطاع؛ جملة «not a fallback» خاطئة في openapi و03 وdocstring) + 4 تحسينات. دورة تنظيف واحدة قبل القبول، والمسافات الزائدة في design.md أصلحها المنسّق |
+| 10 | المراجعة الأمنية | security-reviewer | ✅ | security-review.md | PASS، لا حاجب. SR‑1…SR‑3 معلوماتية (أسماء fallback مرئية لأعضاء المساحة؛ صف تالف يعطي 500 للصفحة؛ مفتاح `fallback` من الوكيل يبقى على الإطار) |
 | 11 | القبول | product-owner | ⏸ | acceptance.md | |
 | 12 | بوابة ② الدمج | بشري | ⏸ | رابط PR | |
 | 13 | staging | devops-engineer | ⏭ | | لا يوجد هدف staging (CLAUDE.md) |
