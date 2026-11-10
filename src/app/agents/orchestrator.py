@@ -936,8 +936,9 @@ def _with_fallback_notice(text: str, fallback: _Fallback | None) -> str:
 def _stored_fallback(fallback: _Fallback | None) -> FallbackRef | None:
     """The fallback a message records (th-2): the SAME condition as
     ``_with_fallback_notice`` (``fallback.switched``), so "the text starts with
-    the notice" and "fallback is not null" cannot disagree. A turn the primary
-    started and then lost never switched, and records None."""
+    the notice" and "fallback is not null" cannot disagree. A stream the
+    primary started and then lost after its first chunk never switched, and
+    records None."""
     if fallback is None or not fallback.switched:
         return None
     return fallback.ref()

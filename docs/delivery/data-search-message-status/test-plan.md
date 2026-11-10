@@ -33,7 +33,7 @@
 | AC‑2.6 | وحدة | `DOM::test_a_fallback_holds_exactly_four_names`، `SQL::test_no_credential_can_reach_the_stored_fallback`، `ORCH::test_the_stored_fallback_carries_no_credential`، `FB::test_the_stored_fallback_carries_four_names_and_no_credential` | ✅ |
 | AC‑3.1 | راوتر | `ROUTER::test_a_streamed_answer_is_complete_in_history` | ✅ |
 | AC‑3.2 | راوتر | `ROUTER::test_a_turn_cut_by_the_time_cap_is_partial_in_history` | ✅ |
-| AC‑3.3 | وحدة + حي | `SQL::test_a_row_without_status_hydrates_to_none_none`، `ROUTER::test_a_fallback_is_served_with_the_from_key_and_rows_without_status_are_null` (200 و`null`/`null`)، `RLS::test_a_row_inserted_without_status_or_fallback_reads_back_as_none` (CI)، `MIG::…old_row_survives` (CI) | ✅ (الجزء الحي في CI فقط) |
+| AC‑3.3 | وحدة + حي | `SQL::test_a_row_without_status_hydrates_to_none_none`، `ROUTER::test_a_fallback_is_served_with_the_from_key_and_rows_without_status_are_null` (صف قديم نصه `old`)، `ROUTER::test_a_row_without_status_that_ends_with_the_cut_off_sentence_stays_null` (صف قديم ينتهي نصه بجملة الانقطاع: 200 و`null`/`null`)، `RLS::test_a_row_inserted_without_status_or_fallback_reads_back_as_none` (CI)، `MIG::…old_row_survives` (CI) | ✅ (الجزء الحي في CI فقط) |
 | AC‑3.4 | راوتر | `ROUTER::test_the_user_message_has_status_and_fallback_keys_with_null` | ✅ |
 | AC‑3.5 | راوتر | `ROUTER::test_every_kind_of_message_keeps_content_to_text_and_attachments` (أُضيف: مستخدم، مكتمل، قديم، جزئي مع تحول، وكلها بمفاتيح `status`/`fallback`/`citations` و`content` بمفتاحين). ويكمّله `test_content_stays_text_and_attachments_only` من ث‑1 | ✅ |
 | AC‑3.6 | راوتر | `ROUTER::test_a_partial_arabic_answer_is_sent_as_utf8_and_marked_partial` | ✅ |
@@ -100,7 +100,7 @@ test-rules: OK
 | `fallback` مشوّه (اسم نموذج من 300 حرفاً، الحد 255) | `QA::test_a_name_the_module_refuses_to_record_leaves_null_and_one_clean_warning` عبر الخدمة الحقيقية والمنسّق الحقيقي | الرسالة تُحفظ `complete` بـ `fallback = null`، وجملة التحول باقية، وتحذير واحد، والإطار يحمل `fallback` | كما هو متوقع. التحذير بلا اسم نموذج ولا مفتاح (فُحص نص السجل كله) | ✅ |
 | `fallback` يُسقطه المنفذ | `FB::test_a_module_that_drops_the_fallback_costs_one_warning_without_model_names` | تحذير واحد بلا أسماء | كما هو متوقع | ✅ |
 | رسائل المستخدم | `GET …/messages` | `status` و`fallback` حاضران بـ `null` | كما هو متوقع (`ROUTER::…user_message_has_status_and_fallback_keys_with_null`) | ✅ |
-| صفوف قديمة | رسالة بلا الحقلين، نصها ينتهي بجملة الانقطاع | 200 و`null`/`null`، لا تُسمّى partial | كما هو متوقع | ✅ |
+| صفوف قديمة | رسالة بلا الحقلين، نصها ينتهي بجملة الانقطاع | 200 و`null`/`null`، لا تُسمّى partial | كما هو متوقع (`ROUTER::test_a_row_without_status_that_ends_with_the_cut_off_sentence_stays_null`) | ✅ |
 | جزئي مع تحول معاً | المحلي يموت بعد أول chunk | `partial` و`fallback` غير null | كما هو متوقع (`FB::…dies_mid_answer…`) | ✅ |
 | دور مختلط (السحابي بدأ ثم سقط) | `fails_after` على السحابي | `partial` و`fallback = null` | كما هو متوقع | ✅ |
 | نص جزئي طويل جداً بالعربية | 100,000 حرف «ج» مع `partial` و`fallback` عبر الخدمة | يُحفظ كاملاً | 100000 حرف، `partial`، `fallback` سليم | ✅ |

@@ -746,3 +746,25 @@ async def test_a_module_that_drops_the_fallback_costs_one_warning_without_model_
     rendered = " ".join(f"{r.getMessage()} {r.__dict__}" for r in caplog.records)
     for secret in (_CLOUD_MODEL, _LOCAL_MODEL, "sk-cloud"):
         assert secret not in rendered
+
+
+async def test_a_partial_turn_whose_fallback_is_dropped_costs_one_warning_without_model_names(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The `_persist_partial` path: the module drops the fallback of a cut,
+    switched turn. The partial is still stored, one warning, no names."""
+    orchestrator, threads, _capture = _orchestrator(
+        _ScriptedLLM("openai", fails_first=_DOWN),
+        _ScriptedLLM("ollama", ["half"], fails_after=_TIMED_OUT),
+    )
+    threads._drop_fallback = True
+    with caplog.at_level("WARNING"):
+        events = await _turn(orchestrator)
+
+    assert [e.type for e in events] == ["notice", "token", "error"]
+    assert threads.statuses == [None, "partial"]
+    warnings = [r for r in caplog.records if r.getMessage() == "orchestrator.fallback_not_recorded"]
+    assert len(warnings) == 1
+    rendered = " ".join(f"{r.getMessage()} {r.__dict__}" for r in caplog.records)
+    for secret in (_CLOUD_MODEL, _LOCAL_MODEL, "sk-cloud"):
+        assert secret not in rendered

@@ -1362,7 +1362,7 @@ components:
         fallback:
           allOf: [{ $ref: "#/components/schemas/MessageFallback" }]
           nullable: true
-          description: "Set when the local model answered instead of the conversation's cloud model (capacity-plan 6.4), complete or partial; equal to the `fallback` key of that turn's `final` frame. The stored text still starts with the fallback sentence. Always present. `null` = the primary model answered, or not recorded (user messages, messages saved before this field). A turn the primary model started and then lost is not a fallback (`null`). Route-level names only, never a credential."
+          description: "Set when the local model answered instead of the conversation's cloud model (capacity-plan 6.4), complete or partial; equal to the `fallback` key of that turn's `final` frame. The stored text still starts with the fallback sentence. Always present. `null` = the primary model answered, or not recorded (user messages, messages saved before this field). A stream the primary model started and then lost after its first chunk is not a fallback (`null`). Route-level names only, never a credential."
         token_count: {type: integer, nullable: true}
         seq: {type: integer}
         created_at: {type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$"}

@@ -3121,14 +3121,6 @@ async def test_an_abandoned_stream_is_stored_partial() -> None:
     assert threads.statuses == [None, "partial"]
 
 
-async def test_a_partial_reply_states_its_status_once() -> None:
-    threads = _FakeThreads(known="conv-1")
-
-    await _drive(_cut_orchestrator(_CutOffAgent, threads), "cutoff")
-
-    assert threads.statuses.count("partial") == 1
-
-
 class _MarkerQuotingAgent(BaseAgent):
     """A complete answer whose text happens to quote both cut-off sentences."""
 

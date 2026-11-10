@@ -1508,6 +1508,25 @@ async def test_a_fallback_is_served_with_the_from_key_and_rows_without_status_ar
     assert seen == [(None, None), ("partial", _FALLBACK_WIRE), ("complete", None)]
 
 
+async def test_a_row_without_status_that_ends_with_the_cut_off_sentence_stays_null() -> None:
+    """AC-3.3: nothing is inferred from the text of a row saved before the fields."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client)
+    await stack.service.append(
+        _scope_ctx(),
+        conversation_id,
+        role="assistant",
+        text="half an answer\n\n⚠️ انقطعت الإجابةُ قبل اكتمالها.",
+    )
+
+    page = _messages(client, conversation_id, "")
+
+    (message,) = page["data"]  # type: ignore[index]
+    assert message["status"] is None
+    assert message["fallback"] is None
+
+
 async def test_a_stored_fallback_never_renders_a_from_underscore_key() -> None:
     app, stack = _make_app()
     client = TestClient(app)
