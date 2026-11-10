@@ -41,6 +41,15 @@ from app.framework.settings import Limits
 from app.framework.streaming import ConnectionHub
 from tests.unit.support_access import build_authorization
 from tests.unit.support_streaming import InMemoryWsConnectionRegistry
+from tests.unit.test_llm_fallback import (
+    _CLOUD_MODEL,
+    _DOWN,
+    _LOCAL_MODEL,
+    _ChatAgent,
+    _resolver,
+    _ScriptedLLM,
+)
+from tests.unit.test_orchestrator import _FakeThreads
 
 _W1 = "018f0000-0000-7000-8000-00000000w001"
 _W2 = "018f0000-0000-7000-8000-00000000w002"
@@ -419,3 +428,78 @@ def test_a_member_still_invokes_over_the_socket() -> None:
             {"type": "invoke", "agent_key": "streamer", "conversation_id": "c-10", "input": {}}
         )
         assert ws.receive_json()["type"] == "token"
+
+
+# --------------------------------------------------------------------------- #
+# th-2 / AC-4.7 -- a turn the local model answered, over the socket           #
+# --------------------------------------------------------------------------- #
+def test_a_fallback_turn_keeps_the_notice_and_final_shapes_of_the_contract() -> None:
+    """03 section 3.2 is unchanged by th-2: the stored status/fallback ride on
+    the message, never on a frame. Driven through the REAL fallback path (a
+    cloud that is down, then the local model), so the `final` carries a real
+    `fallback` key and nothing else new."""
+    resolver = _resolver(_ScriptedLLM("openai", fails_first=_DOWN), _ScriptedLLM("ollama", ["ok"]))
+    registry = InMemoryAgentRegistry()
+    registry.register(_ChatAgent.metadata, _ChatAgent)
+    threads = _FakeThreads()
+    orchestrator = AgentOrchestrator(
+        OrchestratorDependencies(
+            agents=registry,
+            executor=AgentLifecycleExecutor(),
+            providers=resolver,
+            llm_fallback=resolver,
+            conversations=threads,
+            authorization=build_authorization(),
+        )
+    )
+    app = FastAPI()
+    app.include_router(
+        create_ws_router(
+            authenticator=_MapAuthenticator(),
+            orchestrator=orchestrator,
+            hub=ConnectionHub(max_connections_per_user=5, registry=InMemoryWsConnectionRegistry()),
+            limits=Limits(),
+            authorization=build_authorization(),
+        ),
+        prefix="/api/v1",
+    )
+    with TestClient(app) as client, client.websocket_connect("/api/v1/ws?token=t-one") as ws:
+        ws.send_json(
+            {
+                "type": "invoke",
+                "agent_key": "chat",
+                "conversation_id": "c-9",
+                "input": {"text": "ما هي السياسة؟"},
+            }
+        )
+        notice = ws.receive_json()
+        token = ws.receive_json()
+        final = ws.receive_json()
+
+    from_to = {
+        "from": {"provider": "openai", "model": _CLOUD_MODEL},
+        "to": {"provider": "ollama", "model": _LOCAL_MODEL},
+    }
+    assert set(notice) == {"type", "conversation_id", "kind", "detail", "from", "to"}
+    assert notice["type"] == "notice"
+    assert notice["kind"] == "llm_fallback"
+    assert (notice["from"], notice["to"]) == (from_to["from"], from_to["to"])
+    assert token == {"type": "token", "conversation_id": "c-9", "delta": "ok"}
+    assert final["type"] == "final"
+    assert final["fallback"] == from_to
+    # Nothing th-2 added leaks onto the frame: the message's status is not a key.
+    assert set(final) == {
+        "type",
+        "conversation_id",
+        "text",
+        "content",
+        "usage",
+        "fallback",
+        "message_id",
+    }
+    # ... while the stored message does carry both (the persisted half of th-2).
+    assert threads.statuses == [None, "complete"]
+    stored = threads.fallbacks[-1]
+    assert stored is not None
+    assert (stored.from_provider, stored.from_model) == ("openai", _CLOUD_MODEL)
+    assert (stored.to_provider, stored.to_model) == ("ollama", _LOCAL_MODEL)

@@ -1813,6 +1813,8 @@ class _FakeAppendMessage:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
         self.appended: list[tuple[str, str, str]] = []
+        # th-2 -- the `status` of each write, apart from `appended`.
+        self.statuses: list[str | None] = []
 
     async def execute(
         self,
@@ -1823,10 +1825,12 @@ class _FakeAppendMessage:
         text: str,
         attachments: tuple[str, ...] = (),
         token_count: int | None = None,
+        status: str | None = None,
     ) -> object:
         if self.error is not None:
             raise self.error
         self.appended.append((conversation_id, role, text))
+        self.statuses.append(status)
         return object()
 
 
@@ -1914,6 +1918,7 @@ async def test_a_finished_summary_reaches_the_thread_that_asked_for_it() -> None
         ("conv-7", "assistant", f'Summary of "{_DELIVERY_FILE}":\n\n{_DELIVERY_TEXT}')
     ]
     assert names.asked == [_DELIVERY_DOC]
+    assert append.statuses == ["complete"]  # th-2: a delivered summary is a whole message
     # Read back under the event's own key, never guessed: the triple on the
     # message is what the build wrote the row under.
     assert summaries.reads == [(_DELIVERY_DOC, SummaryKind.OVERVIEW, SummaryLanguage.AUTO)]
@@ -2187,6 +2192,7 @@ async def test_a_failed_build_reaches_the_thread_that_asked_for_it() -> None:
             f" {SUMMARY_EMPTY_BUILD_REASON}.",
         )
     ]
+    assert append.statuses == ["complete"]  # th-2: the failure notice is a whole message
     # The DD-09 claim is taken under the group this worker already holds, not
     # a second one -- and under THIS event's id, which is not the build
     # request's, so sharing the group costs no idempotency.

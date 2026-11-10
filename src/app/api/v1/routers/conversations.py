@@ -40,6 +40,7 @@ persistence path shared with ``POST /agents/{key}/invoke``.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Request
 from starlette.responses import StreamingResponse
@@ -55,6 +56,7 @@ from app.api.v1.dto.conversations import (
     ConversationOut,
     ConversationPatchIn,
     MessageCreateIn,
+    MessageFallback,
     MessageOut,
 )
 from app.api.v1.dto.pagination import DEFAULT_LIMIT, Cursor, Limit, Page, PageMeta
@@ -63,7 +65,8 @@ from app.api.v1.sse import SSE_HEADERS, SSE_MEDIA_TYPE, sse_stream
 from app.framework.agent_runtime.base_agent import AgentRequest
 from app.modules.access.domain.value_objects import Permission
 from app.modules.conversations.domain.entities import Conversation, Message, PinnedFile
-from app.modules.conversations.ports.inbound import AppendedMessage
+from app.modules.conversations.domain.value_objects import MessageFallback as DomainFallback
+from app.modules.conversations.ports.inbound import AppendedMessage, FallbackRef
 
 # The router-level bearer gate is BELT AND BRACES here, and knowingly so: every
 # route below also takes `ctx: Context`, whose dependency chain authenticates
@@ -98,12 +101,39 @@ def _citations_out(citations: Sequence[object] | None) -> list[Citation] | None:
     return [Citation.model_validate(c, from_attributes=True) for c in citations]
 
 
+def _status_out(raw: str | None) -> Literal["complete", "partial"] | None:
+    # Explicit, not a cast: a value outside the closed set is a loud 500, never
+    # silently rendered (the port's `status` is a plain str).
+    if raw is None:
+        return None
+    if raw == "complete":
+        return "complete"
+    if raw == "partial":
+        return "partial"
+    raise ValueError(f"unknown message status: {raw!r}")
+
+
+def _fallback_out(fallback: DomainFallback | FallbackRef | None) -> MessageFallback | None:
+    # Works for both sources -- the domain `MessageFallback` (reads) and the
+    # port `FallbackRef` -- because both carry the same four attributes.
+    if fallback is None:
+        return None
+    return MessageFallback.model_validate(
+        {
+            "from": {"provider": fallback.from_provider, "model": fallback.from_model},
+            "to": {"provider": fallback.to_provider, "model": fallback.to_model},
+        }
+    )
+
+
 def _to_message_out(message: Message) -> MessageOut:
     return MessageOut(
         id=message.id,
         role=message.role.value,
         content={"text": message.content.text, "attachments": list(message.content.attachments)},
         citations=_citations_out(message.citations),
+        status=_status_out(None if message.status is None else message.status.value),
+        fallback=_fallback_out(message.fallback),
         token_count=message.token_count,
         seq=message.seq,
         created_at=message.created_at,
@@ -131,6 +161,8 @@ def appended_to_message_out(message: AppendedMessage) -> MessageOut:
         role=message.role,
         content={"text": message.text, "attachments": list(message.attachments)},
         citations=_citations_out(message.citations),
+        status=_status_out(message.status),
+        fallback=_fallback_out(message.fallback),
         token_count=message.token_count,
         seq=message.seq,
         created_at=message.created_at,

@@ -43,7 +43,7 @@ from app.modules.conversations.domain.value_objects import (
     AgentKey,
     ConversationKind,
 )
-from app.modules.conversations.ports.inbound import CitationRef
+from app.modules.conversations.ports.inbound import CitationRef, FallbackRef
 from tests.unit.support_conversations import StubModelCatalog
 
 # The space every thread here is opened in, and the space a ready file is in
@@ -1103,3 +1103,107 @@ async def test_the_pending_write_is_persisted_and_not_only_mutated() -> None:
     await _threads(conversations).expect_clarification(_ctx(), conversation.id, ["a.pdf"])
 
     assert conversations.saved_ids == [conversation.id]
+
+
+# --------------------------------------------------------------------------- #
+# status / fallback (th-2)                                                     #
+# --------------------------------------------------------------------------- #
+def _fb(**overrides: str) -> FallbackRef:
+    fields: dict[str, str] = {
+        "from_provider": "openai",
+        "from_model": "gpt-4.1-mini",
+        "to_provider": "ollama",
+        "to_model": "gemma3:1b",
+    }
+    fields.update(overrides)
+    return FallbackRef(**fields)
+
+
+async def test_the_service_round_trips_status_and_fallback() -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+
+    appended = await _threads(conversations).append(
+        _ctx(), conversation.id, role="assistant", text="a", status="partial", fallback=_fb()
+    )
+
+    assert appended.status == "partial"
+    assert appended.fallback == _fb()
+    stored = conversations.messages[conversation.id][0]
+    assert stored.status is not None
+    assert stored.status.value == "partial"
+
+
+async def test_no_status_stays_none_on_both_sides() -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+
+    appended = await _threads(conversations).append(_ctx(), conversation.id, role="user", text="q")
+
+    assert appended.status is None
+    assert appended.fallback is None
+
+
+@pytest.mark.parametrize("bad", ["error", "done", "COMPLETE", ""])
+async def test_an_unknown_status_is_a_validation_error_and_writes_no_row(bad: str) -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+
+    with pytest.raises(ValidationError):
+        await AppendMessage(conversations).execute(
+            _ctx(), conversation.id, role="assistant", text="a", status=bad
+        )
+    assert conversations.messages.get(conversation.id, []) == []
+
+
+async def test_a_status_on_a_user_message_is_a_validation_error() -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+
+    with pytest.raises(ValidationError):
+        await AppendMessage(conversations).execute(
+            _ctx(), conversation.id, role="user", text="q", status="complete"
+        )
+    assert conversations.messages.get(conversation.id, []) == []
+
+
+async def test_a_fallback_without_a_status_is_a_validation_error() -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+
+    with pytest.raises(ValidationError):
+        await AppendMessage(conversations).execute(
+            _ctx(), conversation.id, role="assistant", text="a", fallback=_fb()
+        )
+    assert conversations.messages.get(conversation.id, []) == []
+
+
+async def test_a_fallback_on_a_user_message_is_a_validation_error() -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+
+    with pytest.raises(ValidationError):
+        await AppendMessage(conversations).execute(
+            _ctx(), conversation.id, role="user", text="q", fallback=_fb()
+        )
+
+
+@pytest.mark.parametrize("bad", [_fb(to_model=""), _fb(from_provider="a" * 256)])
+async def test_a_malformed_fallback_is_dropped_and_the_message_is_still_saved(
+    bad: FallbackRef,
+) -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+
+    message, _ = await AppendMessage(conversations).execute(
+        _ctx(),
+        conversation.id,
+        role="assistant",
+        text="the answer",
+        status="complete",
+        fallback=bad,
+    )
+
+    assert message.fallback is None
+    assert message.status is not None
+    assert message.content.text == "the answer"

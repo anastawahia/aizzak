@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import RowMapping
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -33,7 +34,9 @@ from app.modules.conversations.domain.value_objects import (
     Citation,
     ConversationKind,
     MessageContent,
+    MessageFallback,
     MessageRole,
+    MessageStatus,
 )
 from tests.integration.conftest import LiveDbDsns
 
@@ -1213,3 +1216,206 @@ async def test_citations_are_invisible_to_another_tenant(
     assert await _fetch_citations_as_owner(live_db.owner, ws_b, message.id) == []
     # tenant A still sees it.
     assert len(await _fetch_citations_as_owner(live_db.owner, ws_a, message.id)) == 1
+
+
+# --------------------------------------------------------------------------- #
+# status / fallback (ث-2): jsonb + text round trip, NULL, CHECK, isolation    #
+# --------------------------------------------------------------------------- #
+def _a_fallback() -> MessageFallback:
+    return MessageFallback(
+        from_provider="openai",
+        from_model="gpt-4.1-mini",
+        to_provider="ollama",
+        to_model="gemma3:1b",
+    )
+
+
+async def _fetch_status_as_owner(
+    owner_dsn: str, workspace_id: str, message_id: str
+) -> list[RowMapping]:
+    """``status`` / ``fallback`` and their ``IS NULL`` flags as the owner, with
+    the GUC set to ``workspace_id`` (the caller picks the tenant under test)."""
+    engine = create_engine(DatabaseSettings(url=owner_dsn), poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(
+                text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": workspace_id}
+            )
+            result = await conn.execute(
+                text(
+                    "SELECT status, fallback, status IS NULL AS status_is_null, "
+                    "fallback IS NULL AS fallback_is_null "
+                    "FROM conversations.messages WHERE id = :id"
+                ),
+                {"id": message_id},
+            )
+            return list(result.mappings().all())
+    finally:
+        await engine.dispose()
+
+
+async def test_status_and_fallback_round_trip_and_none_is_sql_null(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws)
+    await repo_conversations.add(ctx, conversation)
+
+    now = utc_now()
+    user = conversation.append_message(
+        new_uuid7(), MessageRole.USER, MessageContent(text="q"), None, now
+    )
+    await repo_conversations.append_message(ctx, user)
+    cut = conversation.append_message(
+        new_uuid7(),
+        MessageRole.ASSISTANT,
+        MessageContent(text="half"),
+        None,
+        now,
+        status=MessageStatus.PARTIAL,
+        fallback=_a_fallback(),
+    )
+    await repo_conversations.append_message(ctx, cut)
+    whole = conversation.append_message(
+        new_uuid7(),
+        MessageRole.ASSISTANT,
+        MessageContent(text="all"),
+        None,
+        now,
+        status=MessageStatus.COMPLETE,
+    )
+    await repo_conversations.append_message(ctx, whole)
+
+    page = await repo_conversations.list_messages(ctx, conversation.id, limit=10, cursor=None)
+    assert [(m.status, m.fallback) for m in page.data] == [
+        (None, None),
+        (MessageStatus.PARTIAL, _a_fallback()),
+        (MessageStatus.COMPLETE, None),
+    ]
+
+    # SQL NULL, not the JSON literal `null` (proves `none_as_null` on `fallback`).
+    [user_row] = await _fetch_status_as_owner(live_db.owner, ws, user.id)
+    assert user_row["status_is_null"] is True
+    assert user_row["fallback_is_null"] is True
+    [whole_row] = await _fetch_status_as_owner(live_db.owner, ws, whole.id)
+    assert whole_row["status"] == "complete"
+    assert whole_row["fallback_is_null"] is True
+    # the stored shape is final.fallback's
+    [cut_row] = await _fetch_status_as_owner(live_db.owner, ws, cut.id)
+    assert cut_row["status"] == "partial"
+    assert cut_row["fallback"] == {
+        "from": {"provider": "openai", "model": "gpt-4.1-mini"},
+        "to": {"provider": "ollama", "model": "gemma3:1b"},
+    }
+
+
+async def test_a_row_inserted_without_status_or_fallback_reads_back_as_none(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    """A row written before 0008 (raw INSERT naming neither column)."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws)
+    await repo_conversations.add(ctx, conversation)
+
+    engine = create_engine(DatabaseSettings(url=live_db.owner), poolclass=NullPool)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": ws})
+            await conn.execute(
+                text(
+                    "INSERT INTO conversations.messages "
+                    "(id, conversation_id, workspace_id, role, content, seq) "
+                    "VALUES (:id, :cid, :ws, 'assistant', "
+                    'CAST(\'{"text": "old", "attachments": []}\' AS jsonb), 1)'
+                ),
+                {"id": new_uuid7(), "cid": conversation.id, "ws": ws},
+            )
+    finally:
+        await engine.dispose()
+
+    page = await repo_conversations.list_messages(ctx, conversation.id, limit=10, cursor=None)
+    assert [(m.status, m.fallback) for m in page.data] == [(None, None)]
+
+
+async def test_the_status_check_refuses_a_value_outside_the_closed_set(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    """ck_messages_status is NOT VALID but enforced on every new row (SQLSTATE 23514)."""
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws)
+    await repo_conversations.add(ctx, conversation)
+
+    engine = create_engine(DatabaseSettings(url=live_db.owner), poolclass=NullPool)
+    insert = text(
+        "INSERT INTO conversations.messages "
+        "(id, conversation_id, workspace_id, role, content, seq, status) "
+        "VALUES (:id, :cid, :ws, 'assistant', "
+        'CAST(\'{"text": "x", "attachments": []}\' AS jsonb), :seq, :status)'
+    )
+    try:
+        with pytest.raises(DBAPIError) as refused:
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": ws}
+                )
+                await conn.execute(
+                    insert,
+                    {
+                        "id": new_uuid7(),
+                        "cid": conversation.id,
+                        "ws": ws,
+                        "seq": 1,
+                        "status": "error",
+                    },
+                )
+        assert "ck_messages_status" in str(refused.value)
+
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT set_config('app.workspace_id', :ws, true)"), {"ws": ws})
+            await conn.execute(
+                insert,
+                {
+                    "id": new_uuid7(),
+                    "cid": conversation.id,
+                    "ws": ws,
+                    "seq": 1,
+                    "status": "partial",
+                },
+            )
+    finally:
+        await engine.dispose()
+
+    page = await repo_conversations.list_messages(ctx, conversation.id, limit=10, cursor=None)
+    assert [m.status for m in page.data] == [MessageStatus.PARTIAL]
+
+
+async def test_status_and_fallback_are_invisible_to_another_tenant(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    ctx_a, ctx_b = _ctx(ws_a), _ctx(ws_b)
+    conversation = _conversation(workspace_id=ws_a)
+    await repo_conversations.add(ctx_a, conversation)
+    message = conversation.append_message(
+        new_uuid7(),
+        MessageRole.ASSISTANT,
+        MessageContent(text="a"),
+        None,
+        utc_now(),
+        status=MessageStatus.PARTIAL,
+        fallback=_a_fallback(),
+    )
+    await repo_conversations.append_message(ctx_a, message)
+
+    # tenant B: the repository finds nothing ...
+    page = await repo_conversations.list_messages(ctx_b, conversation.id, limit=10, cursor=None)
+    assert page.data == []
+    # ... and so does a raw SELECT of the columns with B's GUC.
+    assert await _fetch_status_as_owner(live_db.owner, ws_b, message.id) == []
+    # tenant A still sees them.
+    [row] = await _fetch_status_as_owner(live_db.owner, ws_a, message.id)
+    assert row["status"] == "partial"
+    assert row["fallback_is_null"] is False

@@ -83,23 +83,29 @@ AR  Conversation { id, workspace_id, space_id, agent_key: AgentKey, kind: Conver
                    created_at, updated_at, deleted_at, version }
 E   Message      { id, conversation_id, workspace_id, role: MessageRole, content: MessageContent,
                    token_count, seq: int, created_at, deleted_at,
-                   citations: tuple[Citation] | None }
+                   citations: tuple[Citation] | None,
+                   status: MessageStatus | None, fallback: MessageFallback | None }
 VO  AgentKey         (slug الوكيل من الـManifest؛ أو workflow_key عند kind=workflow)
 VO  ConversationKind (agent | workflow)
 VO  MessageRole      (user | assistant | system | tool)
 VO  MessageContent   (نص + مرفقات اختيارية: قائمة file_id بالإشارة فقط)
 VO  Citation         (document_id, file_name, page, chunk_id, rank) — لقطة مصدر جواب المساعد (ث‑1)
+VO  MessageStatus    (complete | partial) — كيف انتهى الدور الذي كتب رسالة المساعد (ث‑2)
+VO  MessageFallback  (from_provider, from_model, to_provider, to_model) — تحوّل 6.4 الذي أُجيب تحته (ث‑2)
 EV  ConversationStarted(conversation_id, workspace_id, agent_key, kind, occurred_at)
 EV  MessageAppended(message_id, conversation_id, role, seq, occurred_at)
 ```
 - **`space_id`** (‏خطّة المساحات §3.2): المساحةُ التي فُتح فيها الخيط. محورُ ملكيّةٍ **داخل** المستأجر لا حدُّ أمانٍ ثانٍ، وبلا مُبدِّل: نقلُ خيطٍ بين المساحات يُعيد توجيه نطاقِ استرجاع كلِّ رسائله بصمت.
 - **`model_route`** (‏`BE‑RAG‑003`): مفتاحُ توجيهٍ من جدول D‑16، لا اسمَ موديلٍ خام. `None` ⇒ يُحلّ بمفتاح الوكيل.
 - **`pending_clarification`** (‏ب‑9، ف‑1أ): أسماءُ الملفّات التي سألها الدورُ السابق «أيّ ملفّ تقصد؟» **بترتيب عرضها**، و`()` ⇒ لا سؤالَ معلَّق. **أسماءٌ لا مُعرِّفات**، لأنّ المعروضَ أسماءٌ والجوابَ عن معروض، و«الثاني» لا يُقرأ إلّا على القائمة التي عُرضت. وتعيش **دوراً واحداً**: `expect_clarification` هي الضبطُ والمحوُ معاً، فلا يصير المحوُ خطوةً يمكن إغفالُها — ونيّةٌ تعيش دورين تقرأ سؤالاً جديداً تماماً جواباً على سؤالٍ منسيّ.
-- **`citations`** (‏ث‑1): مصادر جواب المساعد كما أصدرها الوكيل، **بترتيبها** وقيمها حرفياً. `None` ⇒ لم يُسجَّل (رسائل المستخدم، الصفوف القديمة، وكيلٌ بلا استشهادات، الأجوبة المقطوعة، مخرجات خطوات الـworkflow، قائمةٌ تالفة)، و`()` ⇒ صرّح الوكيل بلا مصادر. **عمودٌ مستقلّ لا مفتاحٌ في `content`**: يبقى `MessageContent` نصاً ومرفقات فقط، وللرسالة جزءٌ مُهيكَل واحد هو هذا. وهذا يصحّح فرضية ب‑10 القديمة «لا نصفَ مُهيكَلاً للرسالة» (علامة الانقطاع تبقى جملةً في النص؛ تحويلها إلى حقل قرارٌ لاحق). `Citation` لقطة وقت الجواب: `file_name` لا يُحدَّث من `files` بعد ذلك. قواعد الصحة في VO `Citation` وحدها: `document_id`/`chunk_id` بصيغة UUID، و`rank ≥ 1`، و`page` فارغة أو ≥ 1، و`file_name` فارغ أو من 1 إلى 255 حرفاً.
+- **`citations`** (‏ث‑1): مصادر جواب المساعد كما أصدرها الوكيل، **بترتيبها** وقيمها حرفياً. `None` ⇒ لم يُسجَّل (رسائل المستخدم، الصفوف القديمة، وكيلٌ بلا استشهادات، الأجوبة المقطوعة، مخرجات خطوات الـworkflow، قائمةٌ تالفة)، و`()` ⇒ صرّح الوكيل بلا مصادر. **عمودٌ مستقلّ لا مفتاحٌ في `content`**: يبقى `MessageContent` نصاً ومرفقات فقط، وللرسالة ثلاثة أجزاء مُهيكَلة: `citations` و`status` و`fallback` (ث‑2). وهذا يصحّح فرضية ب‑10 القديمة «لا نصفَ مُهيكَلاً للرسالة». `Citation` لقطة وقت الجواب: `file_name` لا يُحدَّث من `files` بعد ذلك. قواعد الصحة في VO `Citation` وحدها: `document_id`/`chunk_id` بصيغة UUID، و`rank ≥ 1`، و`page` فارغة أو ≥ 1، و`file_name` فارغ أو من 1 إلى 255 حرفاً.
+- **`status`** (‏ث‑2): كيف انتهى الدور الذي كتب رسالة المساعد، مجموعة مغلقة `complete` | `partial`. يضعه **مسار الشيفرة الذي كتب الرسالة** (المنسّق في `_persist_reply` و`_persist_step_output`، و`_persist_partial`، وعاملا تسليم الملخص)، **لا يُستنتج من النص**. `None` ⇒ لم يُسجَّل (رسائل المستخدم، كل صف قبل الحقل، صفوف `load_seed`). لا قيمة `error`: لا مسار يكتب رسالة لدور لم ينتج شيئاً، وفشل بلا رسالة هو سجل المحاولة في ث‑3.
+- **`fallback`** (‏ث‑2): تحوّل 6.4 حين أجاب النموذج المحلي، بأربعة أسماء مسارات (المزوّد والنموذج لكل جهة) بشكل `final.fallback`، ولا اعتماد فيه. `None` ⇒ أجاب الأساسي أو لم يُسجَّل. مصدره سجل المنسّق عن الدور بالشرط نفسه الذي يضع جملة التحول في النص. عمودان مستقلان عن `content`، لأن الحالة والتحول متعامدان (جزئي ومحلي معاً ممكن). وهذا **ينقض قرار ب‑10 رقم 1** (جملة لا حقل) بقرار المالك (2026‑11‑10): الجملتان باقيتان في النص لكل قارئ لا يعرف الحقلين وللصفوف القديمة.
 - **INV‑CV1:** `seq` متتابع تصاعدي داخل المحادثة (منع الفجوات/التكرار عبر قفل تفاؤلي على `Conversation.version`).
 - **INV‑CV2:** المرفقات تُشار إليها بـ`file_id` فقط (مِلكية المحتوى لوحدة `files`) — لا نسخ محتوى.
 - **INV‑CV3:** لا إلحاق برسائل محادثة `deleted_at IS NOT NULL`. الحذف الناعم متاح على مستويين: المحادثة (`Conversation.deleted_at`) والرسالة المفردة (`Message.deleted_at`)؛ رسالة محذوفة ناعماً تُستبعَد من الاسترجاع دون تغيير `seq` (لا فجوات في العدّاد).
 - **INV‑CV4:** `citations` لرسائل `assistant` وحدها، وبحدٍّ أقصى 50 (`MAX_CITATIONS`). الاستشهادات التالفة أو الزائدة عن الحد تُسقِطها حالة الاستخدام `AppendMessage` (تُخزَّن `None`) ولا تُفشل الإلحاق: النص هو الدور، والاستشهادات تعليقٌ عليه.
+- **INV‑CV5:** `status` و`fallback` لرسائل `assistant` وحدها، و`fallback` يستلزم `status` (وإلا `InvalidConversationInput`). حالة الاستخدام `AppendMessage` صارمة في `status` (قيمة غير معروفة أو على غير المساعد ⇒ `ValidationError` قبل أي كتابة)، وليّنة في **قيم** `fallback` (VO يرفضها ⇒ تُخزَّن `None` ولا يفشل الإلحاق، كما في INV‑CV4).
 - **Use‑cases:** `StartConversation`, `AppendMessage`, `ListConversationsByAgent`, `RenameConversation`, `SoftDeleteConversation`, `PinConversationModel`, `ExpectClarification`.
 
 ---

@@ -615,3 +615,156 @@ async def test_a_healthy_cloud_turn_keeps_its_citations_without_a_notice() -> No
     assert _stored_reply(threads) == "fine"
     assert threads.citations[-1] is not None
     assert len(threads.citations[-1] or ()) == 1
+
+
+# --------------------------------------------------------------------------- #
+# th-2 -- the stored status and fallback, through the REAL fallback path      #
+# --------------------------------------------------------------------------- #
+_SWITCH: Json = {
+    "from": {"provider": "openai", "model": _CLOUD_MODEL},
+    "to": {"provider": "ollama", "model": _LOCAL_MODEL},
+}
+
+
+def _stored_fallback_as_frame(threads: _FakeThreads) -> Json | None:
+    ref = threads.fallbacks[-1]
+    if ref is None:
+        return None
+    return {
+        "from": {"provider": ref.from_provider, "model": ref.from_model},
+        "to": {"provider": ref.to_provider, "model": ref.to_model},
+    }
+
+
+async def test_a_switched_turn_is_stored_complete_with_the_final_frames_fallback() -> None:
+    """AC-2.1: deep equality with `final.fallback`, four values."""
+    orchestrator, threads, _capture = _orchestrator(
+        _ScriptedLLM("openai", fails_first=_DOWN),
+        _ScriptedLLM("ollama", [_GREETING, _GREETING_TAIL]),
+    )
+
+    events = await _turn(orchestrator)
+
+    final = events[-1]
+    assert final.type == "final"
+    assert threads.statuses == [None, "complete"]  # the user message states none
+    assert threads.fallbacks[0] is None
+    assert final.data["fallback"] == _SWITCH
+    assert _stored_fallback_as_frame(threads) == final.data["fallback"]
+
+
+async def test_a_switched_turn_keeps_the_final_frames_keys_unchanged() -> None:
+    """AC-4.4 (fallback variant): no key th-2 added, `fallback` as before."""
+    orchestrator, _threads, _capture = _orchestrator(
+        _ScriptedLLM("openai", fails_first=_DOWN), _ScriptedLLM("ollama", ["x"])
+    )
+    events = await _turn(orchestrator)
+    assert set(events[-1].data) == {"text", "message_id", "content", "usage", "fallback"}
+    assert "status" not in events[-1].data and "message_status" not in events[-1].data
+
+
+async def test_a_local_model_that_dies_mid_answer_is_stored_partial_and_switched() -> None:
+    """AC-2.2: both fields at once; the text opens with the notice, ends with the cut."""
+    orchestrator, threads, _capture = _orchestrator(
+        _ScriptedLLM("openai", fails_first=_DOWN),
+        _ScriptedLLM("ollama", ["half"], fails_after=_TIMED_OUT),
+    )
+
+    events = await _turn(orchestrator)
+
+    assert [e.type for e in events] == ["notice", "token", "error"]
+    assert threads.statuses == [None, "partial"]
+    assert _stored_fallback_as_frame(threads) == _SWITCH
+    text = _stored_reply(threads)
+    assert text.startswith(f"{_NOTICE_AR}\n\nhalf")
+    assert text.endswith("⚠️ انقطعت الإجابةُ قبل اكتمالها.")
+
+
+async def test_a_healthy_cloud_turn_is_stored_complete_without_a_fallback() -> None:
+    """AC-2.3."""
+    orchestrator, threads, _capture = _orchestrator(
+        _ScriptedLLM("openai", ["fine"]), _ScriptedLLM("ollama", ["never"])
+    )
+    await _turn(orchestrator)
+    assert threads.statuses == [None, "complete"]
+    assert threads.fallbacks == [None, None]
+
+
+async def test_a_turn_the_cloud_started_and_lost_is_partial_with_no_fallback() -> None:
+    """AC-2.3, mixed turn: no switch happened, so no `fallback`."""
+    orchestrator, threads, _capture = _orchestrator(
+        _ScriptedLLM("openai", ["half"], fails_after=_TIMED_OUT), _ScriptedLLM("ollama", ["never"])
+    )
+    await _turn(orchestrator)
+    assert threads.statuses == [None, "partial"]
+    assert threads.fallbacks == [None, None]
+    assert not _stored_reply(threads).startswith("⚠️ تعذّر")
+
+
+async def test_an_english_question_is_stored_under_the_english_notice() -> None:
+    """AC-2.4: the stored text starts with the notice in the question's language."""
+    orchestrator, threads, _capture = _orchestrator(
+        _ScriptedLLM("openai", fails_first=_DOWN), _ScriptedLLM("ollama", ["Hi"])
+    )
+    await _turn(orchestrator, text="What is the policy?")
+    assert _stored_reply(threads) == f"{_NOTICE_EN}\n\nHi"
+    assert threads.statuses[-1] == "complete"
+    assert threads.fallbacks[-1] is not None
+
+
+async def test_the_stored_fallback_carries_four_names_and_no_credential() -> None:
+    """AC-2.6: the key the cloud route resolved never reaches the stored value."""
+    orchestrator, threads, _capture = _orchestrator(
+        _ScriptedLLM("openai", fails_first=_DOWN), _ScriptedLLM("ollama", ["x"])
+    )
+    await _turn(orchestrator)
+    ref = threads.fallbacks[-1]
+    assert ref is not None
+    assert "sk-cloud" not in repr(ref)
+    assert set(vars(ref) if hasattr(ref, "__dict__") else ref.__slots__) == {
+        "from_provider",
+        "from_model",
+        "to_provider",
+        "to_model",
+    }
+
+
+async def test_a_module_that_drops_the_fallback_costs_one_warning_without_model_names(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Malformed/dropped fallback: the turn still answers, one warning, no names."""
+    orchestrator, threads, _capture = _orchestrator(
+        _ScriptedLLM("openai", fails_first=_DOWN), _ScriptedLLM("ollama", ["x"])
+    )
+    threads._drop_fallback = True
+    with caplog.at_level("WARNING"):
+        events = await _turn(orchestrator)
+
+    assert events[-1].type == "final"
+    warnings = [r for r in caplog.records if r.getMessage() == "orchestrator.fallback_not_recorded"]
+    assert len(warnings) == 1
+    rendered = " ".join(f"{r.getMessage()} {r.__dict__}" for r in caplog.records)
+    for secret in (_CLOUD_MODEL, _LOCAL_MODEL, "sk-cloud"):
+        assert secret not in rendered
+
+
+async def test_a_partial_turn_whose_fallback_is_dropped_costs_one_warning_without_model_names(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The `_persist_partial` path: the module drops the fallback of a cut,
+    switched turn. The partial is still stored, one warning, no names."""
+    orchestrator, threads, _capture = _orchestrator(
+        _ScriptedLLM("openai", fails_first=_DOWN),
+        _ScriptedLLM("ollama", ["half"], fails_after=_TIMED_OUT),
+    )
+    threads._drop_fallback = True
+    with caplog.at_level("WARNING"):
+        events = await _turn(orchestrator)
+
+    assert [e.type for e in events] == ["notice", "token", "error"]
+    assert threads.statuses == [None, "partial"]
+    warnings = [r for r in caplog.records if r.getMessage() == "orchestrator.fallback_not_recorded"]
+    assert len(warnings) == 1
+    rendered = " ".join(f"{r.getMessage()} {r.__dict__}" for r in caplog.records)
+    for secret in (_CLOUD_MODEL, _LOCAL_MODEL, "sk-cloud"):
+        assert secret not in rendered

@@ -44,12 +44,13 @@ from app.framework.agent_runtime.executor import AgentLifecycleExecutor
 from app.framework.agent_runtime.metadata import AgentMetadata
 from app.framework.agent_runtime.registry import InMemoryAgentRegistry
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.errors import UnauthorizedError
+from app.framework.errors import ConflictError, UnauthorizedError
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.providers.resolver import ResolvedProvider
 from app.framework.settings import Settings
 from app.framework.streaming import ConnectionHub
 from app.framework.workflows import InMemoryWorkflowRegistry
+from app.modules.conversations.ports.inbound import FallbackRef
 from tests.unit.support_access import build_authorization
 from tests.unit.support_conversations import (
     ConversationsStack,
@@ -139,6 +140,47 @@ class _CitingAgent(BaseAgent):
         yield AgentEvent(type="final", data=data)
 
 
+_HALF_METADATA = AgentMetadata(
+    key="half",
+    name="Half",
+    version="1.0.0",
+    description="Streams some Arabic text and then fails (th-2).",
+    capabilities=frozenset(),
+    required_permissions=frozenset({"agents:invoke"}),
+)
+_SLOW_METADATA = AgentMetadata(
+    key="slow",
+    name="Slow",
+    version="1.0.0",
+    description="Streams a token and then stalls past the cap (th-2).",
+    capabilities=frozenset(),
+    required_permissions=frozenset({"agents:invoke"}),
+)
+
+
+class _HalfAgent(BaseAgent):
+    metadata = _HALF_METADATA
+
+    async def initialize(self) -> None:
+        return None
+
+    async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        yield AgentEvent(type="token", data={"delta": "الجواب هو"})
+        raise ConflictError("the provider went away")
+
+
+class _SlowAgent(BaseAgent):
+    metadata = _SLOW_METADATA
+
+    async def initialize(self) -> None:
+        return None
+
+    async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        yield AgentEvent(type="token", data={"delta": "slow answer"})
+        await asyncio.sleep(3)
+        yield AgentEvent(type="final", data={"text": "unreachable"})
+
+
 class _FakeLLM:
     provider = "fake"
 
@@ -174,12 +216,14 @@ class _FakeWsAuth:
         raise AssertionError("not exercised")
 
 
-def _make_app() -> tuple[FastAPI, ConversationsStack]:
+def _make_app(*, stream_max_duration_s: float | None = None) -> tuple[FastAPI, ConversationsStack]:
     """The app plus the store behind it — tests assert on the wire AND on what
     was actually persisted, which is the whole point of 6.1-ج-3."""
     registry = InMemoryAgentRegistry()
     registry.register(_ECHO_METADATA, _EchoAgent)
     registry.register(_CITING_METADATA, _CitingAgent)
+    registry.register(_HALF_METADATA, _HalfAgent)
+    registry.register(_SLOW_METADATA, _SlowAgent)
     conversations = build_conversations(spaces=StubActiveSpaces(live={_SPACE}))
     orchestrator = AgentOrchestrator(
         OrchestratorDependencies(
@@ -187,6 +231,7 @@ def _make_app() -> tuple[FastAPI, ConversationsStack]:
             executor=AgentLifecycleExecutor(),
             providers=_FakeResolver(),
             conversations=conversations.service,
+            stream_max_duration_s=stream_max_duration_s,
             authorization=build_authorization(),
         )
     )
@@ -1308,3 +1353,278 @@ def test_no_token_is_401_on_the_messages_route() -> None:
     response = client.get("/api/v1/conversations/x/messages")
 
     assert response.status_code == 401
+
+
+# --------------------------------------------------------------------------- #
+# ث-2 — status and fallback stored with the assistant message and returned     #
+# --------------------------------------------------------------------------- #
+_FALLBACK_WIRE = {
+    "from": {"provider": "openai", "model": "gpt-4.1-mini"},
+    "to": {"provider": "ollama", "model": "gemma3:1b"},
+}
+_FALLBACK_REF = FallbackRef("openai", "gpt-4.1-mini", "ollama", "gemma3:1b")
+
+
+def _assistant_of(client: TestClient, conversation_id: str) -> dict[str, object]:
+    listed = _messages(client, conversation_id)["data"]
+    return [m for m in listed if m["role"] == "assistant"][-1]  # type: ignore[attr-defined,no-any-return]
+
+
+def test_a_streamed_answer_is_complete_in_history() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client)
+
+    response = _ask(client, conversation_id, stream=True)
+
+    final = _final_frame(response.text)  # type: ignore[attr-defined]
+    assistant = _assistant_of(client, conversation_id)
+    assert assistant["id"] == final["message_id"]
+    assert assistant["status"] == "complete"
+    assert assistant["fallback"] is None
+    # the frame gains nothing (FR-9)
+    assert "status" not in final
+    assert "message_status" not in final
+
+
+def test_a_turn_cut_by_the_time_cap_is_partial_in_history() -> None:
+    app, _ = _make_app(stream_max_duration_s=0.05)
+    client = TestClient(app)
+    conversation_id = _create(client, agent_key="slow")
+
+    _ask(client, conversation_id, stream=True)
+
+    assistant = _assistant_of(client, conversation_id)
+    assert assistant["status"] == "partial"
+    assert assistant["fallback"] is None
+    assert assistant["content"]["text"].startswith("slow answer")  # type: ignore[index]
+
+
+def test_a_partial_arabic_answer_is_sent_as_utf8_and_marked_partial() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client, agent_key="half")
+    _ask(client, conversation_id, stream=True)
+
+    response = client.get(f"/api/v1/conversations/{conversation_id}/messages", headers=_auth())
+
+    assert "انقطعت الإجابةُ قبل اكتمالها.".encode() in response.content
+    assert b"\\u" not in response.content
+    assert _assistant_of(client, conversation_id)["status"] == "partial"
+
+
+def test_a_non_streamed_cut_turn_is_a_problem_but_history_keeps_the_partial() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client, agent_key="half")
+
+    response = _ask(client, conversation_id)
+
+    assert response.status_code >= 400  # type: ignore[attr-defined]
+    assert response.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)  # type: ignore[attr-defined]
+    assert _assistant_of(client, conversation_id)["status"] == "partial"
+
+
+def test_a_stream_error_frame_keeps_its_problem_keys() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client, agent_key="half")
+
+    response = _ask(client, conversation_id, stream=True)
+
+    lines = response.text.splitlines()  # type: ignore[attr-defined]
+    error = json.loads(lines[lines.index("event: error") + 1].removeprefix("data: "))
+    assert {"type", "title", "status", "code", "detail", "correlation_id"} <= set(error)
+    assert isinstance(error["status"], int)
+
+
+def test_the_user_message_has_status_and_fallback_keys_with_null() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client)
+    _ask(client, conversation_id)
+
+    (user, assistant) = _messages(client, conversation_id)["data"]  # type: ignore[misc]
+
+    assert user["status"] is None  # type: ignore[index]
+    assert user["fallback"] is None  # type: ignore[index]
+    assert "status" in user  # type: ignore[operator]
+    assert "fallback" in user  # type: ignore[operator]
+    assert set(user["content"]) == {"text", "attachments"}  # type: ignore[index]
+    assert set(assistant["content"]) == {"text", "attachments"}  # type: ignore[index]
+
+
+def test_a_client_sent_status_or_fallback_in_content_is_not_stored() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client)
+
+    client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        headers=_auth(),
+        json={"content": {"text": "hi", "status": "partial", "fallback": _FALLBACK_WIRE}},
+    )
+
+    user = _messages(client, conversation_id)["data"][0]  # type: ignore[index]
+    assert user["status"] is None  # type: ignore[index]
+    assert user["fallback"] is None  # type: ignore[index]
+    assert set(user["content"]) == {"text", "attachments"}  # type: ignore[index]
+
+
+def test_a_non_streamed_reply_has_the_same_status_and_fallback_as_history() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client)
+
+    reply = _ask(client, conversation_id).json()  # type: ignore[attr-defined]
+
+    assert reply["status"] == "complete"
+    assert "fallback" in reply
+    stored = _assistant_of(client, conversation_id)
+    assert (stored["status"], stored["fallback"]) == (reply["status"], reply["fallback"])
+
+
+async def test_a_fallback_is_served_with_the_from_key_and_rows_without_status_are_null() -> None:
+    app, stack = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client)
+    ctx = _scope_ctx()
+    await stack.service.append(ctx, conversation_id, role="assistant", text="old")
+    await stack.service.append(
+        ctx, conversation_id, role="assistant", text="b", status="partial", fallback=_FALLBACK_REF
+    )
+    await stack.service.append(ctx, conversation_id, role="assistant", text="c", status="complete")
+
+    seen: list[tuple[object, object]] = []
+    cursor = ""
+    while True:
+        page = _messages(client, conversation_id, f"?limit=1{cursor}")
+        seen.extend((m["status"], m["fallback"]) for m in page["data"])  # type: ignore[attr-defined]
+        next_cursor = page["meta"]["next_cursor"]  # type: ignore[index]
+        if next_cursor is None:
+            break
+        cursor = f"&cursor={next_cursor}"
+
+    assert seen == [(None, None), ("partial", _FALLBACK_WIRE), ("complete", None)]
+
+
+async def test_a_row_without_status_that_ends_with_the_cut_off_sentence_stays_null() -> None:
+    """AC-3.3: nothing is inferred from the text of a row saved before the fields."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client)
+    await stack.service.append(
+        _scope_ctx(),
+        conversation_id,
+        role="assistant",
+        text="half an answer\n\n⚠️ انقطعت الإجابةُ قبل اكتمالها.",
+    )
+
+    page = _messages(client, conversation_id, "")
+
+    (message,) = page["data"]  # type: ignore[index]
+    assert message["status"] is None
+    assert message["fallback"] is None
+
+
+async def test_a_stored_fallback_never_renders_a_from_underscore_key() -> None:
+    app, stack = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client)
+    await stack.service.append(
+        _scope_ctx(),
+        conversation_id,
+        role="assistant",
+        text="b",
+        status="complete",
+        fallback=_FALLBACK_REF,
+    )
+
+    raw = client.get(f"/api/v1/conversations/{conversation_id}/messages", headers=_auth()).text
+
+    assert '"from_"' not in raw
+    assert '"from"' in raw
+
+
+def test_a_deleted_partial_message_leaves_history() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client, agent_key="half")
+    _ask(client, conversation_id, stream=True)
+    partial = _assistant_of(client, conversation_id)
+
+    deleted = client.delete(
+        f"/api/v1/conversations/{conversation_id}/messages/{partial['id']}", headers=_auth()
+    )
+
+    assert deleted.status_code == 204
+    assert partial["id"] not in [m["id"] for m in _messages(client, conversation_id)["data"]]  # type: ignore[attr-defined]
+
+
+def test_an_unknown_thread_is_a_404_problem_without_status_or_fallback() -> None:
+    app, _ = _make_app()
+    client = TestClient(app)
+
+    response = client.get("/api/v1/conversations/missing/messages", headers=_auth())
+
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)
+    assert "fallback" not in response.json()
+
+
+async def test_every_kind_of_message_keeps_content_to_text_and_attachments() -> None:
+    """AC-3.5: user, complete, partial, switched and legacy rows alike -- the
+    two new fields are siblings of `content`, never keys inside it."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client)
+    _ask(client, conversation_id)  # a user message and a complete reply
+    ctx = _scope_ctx()
+    await stack.service.append(ctx, conversation_id, role="assistant", text="old")
+    await stack.service.append(
+        ctx, conversation_id, role="assistant", text="b", status="partial", fallback=_FALLBACK_REF
+    )
+
+    data = _messages(client, conversation_id)["data"]
+
+    assert len(data) == 4  # type: ignore[arg-type]
+    for message in data:  # type: ignore[attr-defined]
+        assert set(message["content"]) == {"text", "attachments"}
+        assert "status" in message and "fallback" in message
+        assert "citations" in message
+
+
+async def test_another_workspaces_history_is_a_404_with_no_status_or_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC-6.1: a partial, switched message in workspace A is invisible to B."""
+    app, stack = _make_app()
+    client = TestClient(app)
+    conversation_id = _create(client)
+    await stack.service.append(
+        _scope_ctx(),
+        conversation_id,
+        role="assistant",
+        text="secret partial",
+        status="partial",
+        fallback=_FALLBACK_REF,
+    )
+    path = f"/api/v1/conversations/{conversation_id}/messages"
+    assert client.get(path, headers=_auth()).status_code == 200  # visible to A
+
+    async def _as_workspace_b(self: _FakeAuth, token: str) -> Principal:
+        return Principal(
+            workspace_id="018f0000-0000-7000-8000-0000000000w2",
+            user_id="018f0000-0000-7000-8000-0000000000u2",
+            roles=frozenset({"owner"}),
+        )
+
+    monkeypatch.setattr(_FakeAuth, "authenticate", _as_workspace_b)
+
+    response = client.get(path, headers=_auth())
+
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)
+    assert "secret partial" not in response.text
+    for leaked in ('status":"partial', 'fallback":{', "gemma3", "gpt-4.1"):
+        assert leaked not in response.text

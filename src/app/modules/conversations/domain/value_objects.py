@@ -23,6 +23,10 @@ _AGENT_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 # th-1 -- at most this many citations on one message; more is malformed (stored NULL).
 MAX_CITATIONS = 50
 _MAX_CITED_FILE_NAME_LEN = 255  # the files module's own bound (files/domain/value_objects.py)
+# th-2 -- bound on each provider/model name a fallback stores. Route-level
+# names from the model catalogue are far shorter; the bound keeps the jsonb
+# small and mirrors _MAX_CITED_FILE_NAME_LEN.
+_MAX_FALLBACK_NAME_LEN = 255
 # Canonical 8-4-4-4-12 text. Matched, never normalised: the stored string must
 # equal the one on the `final` frame.
 _UUID_TEXT_RE = re.compile(
@@ -132,3 +136,39 @@ class Citation:
         if self.page is not None:
             _require_positive_int("page", self.page)
         _require_positive_int("rank", self.rank)
+
+
+class MessageStatus(StrEnum):
+    """How the assistant turn that wrote a message ended (th-2, 06 section 4).
+
+    Closed on purpose: there is no `error` -- no code path stores a message
+    for a turn that produced nothing (owner decision q-3). A failure with no
+    message is th-3's attempt record, not a value here.
+    """
+
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+
+
+@dataclass(frozen=True, slots=True)
+class MessageFallback:
+    """The 6.4 switch an assistant message was answered under (th-2).
+
+    Four route-level names -- what `final.fallback` carries -- and nothing
+    else: no credential can be represented. A snapshot at answer time, like
+    `Citation`: a later change of LLM_FALLBACK_ROUTE does not rewrite it.
+    Stored verbatim (not stripped, not lower-cased) so it equals the frame.
+    """
+
+    from_provider: str
+    from_model: str
+    to_provider: str
+    to_model: str
+
+    def __post_init__(self) -> None:
+        for name in ("from_provider", "from_model", "to_provider", "to_model"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value or len(value) > _MAX_FALLBACK_NAME_LEN:
+                raise InvalidConversationInput(
+                    f"fallback {name} must be 1..{_MAX_FALLBACK_NAME_LEN} characters"
+                )

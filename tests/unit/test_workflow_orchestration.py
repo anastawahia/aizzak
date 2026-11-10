@@ -76,6 +76,7 @@ from app.modules.conversations.domain.entities import Conversation, Message
 from app.modules.conversations.ports.inbound import (
     AppendedMessage,
     CitationRef,
+    FallbackRef,
     StartedConversation,
 )
 from app.modules.usage.ports.inbound import LimitDecision, UsageCharge
@@ -174,6 +175,9 @@ class _FakeThreads:
         self.appended: list[tuple[str, str, str, tuple[str, ...], int | None]] = []
         # th-1 -- the `citations` each `append` received, apart from `appended`.
         self.citations: list[tuple[CitationRef, ...] | None] = []
+        # th-2 -- `status` / `fallback` of each `append`, in lists of their own.
+        self.statuses: list[str | None] = []
+        self.fallbacks: list[FallbackRef | None] = []
         self._raises = raises
         self._append_raises = append_raises
         self._fail_role = fail_role
@@ -204,11 +208,15 @@ class _FakeThreads:
         attachments: tuple[str, ...] = (),
         token_count: int | None = None,
         citations: tuple[CitationRef, ...] | None = None,
+        status: str | None = None,
+        fallback: FallbackRef | None = None,
     ) -> AppendedMessage:
         if self._append_raises is not None and self._fail_role in (None, role):
             raise self._append_raises
         self.appended.append((conversation_id, role, text, attachments, token_count))
         self.citations.append(citations)
+        self.statuses.append(status)
+        self.fallbacks.append(fallback)
         self._seq += 1
         return AppendedMessage(
             id=f"msg-{self._seq}",
@@ -220,6 +228,8 @@ class _FakeThreads:
             seq=self._seq,
             created_at=utc_now(),
             citations=citations,
+            status=status,
+            fallback=fallback,
         )
 
 
@@ -556,6 +566,20 @@ async def test_each_completed_step_is_appended_to_the_thread_in_order() -> None:
     # than dropped — the same choice `_turn_content` makes for a media reply.
     written = [json.loads(text)["who"] for _cid, role, text, _a, _t in threads.appended[1:]]
     assert written == ["echo_a", "echo_b"]
+
+
+async def test_a_completed_step_output_is_stored_complete_with_no_fallback() -> None:
+    """th-2 / AC-1.14: the user's opening turn carries no status; each step's
+    output is a whole message and never switches models."""
+    orchestrator, _, threads = _orchestrator(
+        agents=[_EchoAgent, _EchoB], definitions=[_definition("echo_a", "echo_b")]
+    )
+
+    run = await orchestrator.invoke_workflow(_ctx(), "wf", {"text": "go"}, space_id=_SPACE)
+    await _drain(run)
+
+    assert threads.statuses == [None, "complete", "complete"]
+    assert threads.fallbacks == [None, None, None]
 
 
 async def test_step_outputs_are_stored_without_citations() -> None:

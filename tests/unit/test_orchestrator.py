@@ -27,7 +27,10 @@ from app.agents.orchestrator import (
     _CUT_TIMEOUT,
     AgentOrchestrator,
     OrchestratorDependencies,
+    _Fallback,
+    _stored_fallback,
     _TokenMeter,
+    _warn_if_fallback_dropped,
 )
 from app.api.v1.sse import sse_stream
 from app.framework.agent_runtime.base_agent import (
@@ -36,6 +39,7 @@ from app.framework.agent_runtime.base_agent import (
     AgentRequest,
     BaseAgent,
 )
+from app.framework.agent_runtime.deps_ports import ResolvedLLM
 from app.framework.agent_runtime.executor import AgentLifecycleExecutor
 from app.framework.agent_runtime.metadata import AgentMetadata
 from app.framework.agent_runtime.plugin_loader import PluginLoader
@@ -57,6 +61,7 @@ from app.framework.providers.resolver import ResolvedProvider
 from app.modules.conversations.ports.inbound import (
     AppendedMessage,
     CitationRef,
+    FallbackRef,
     StartedConversation,
 )
 from app.modules.usage.ports.inbound import LimitDecision, UsageCharge
@@ -1195,6 +1200,7 @@ class _FakeThreads:
         space: str | None = _THREAD_SPACE,
         pending: tuple[str, ...] = (),
         drop_citations: bool = False,
+        drop_fallback: bool = False,
     ) -> None:
         self.started: list[tuple[str, str]] = []
         self.spaces: list[str | None] = []
@@ -1204,6 +1210,12 @@ class _FakeThreads:
         self.citations: list[tuple[CitationRef, ...] | None] = []
         # True = behave like the module that DROPPED the citations it was sent.
         self._drop_citations = drop_citations
+        # th-2 -- `status` and `fallback` of each `append`, in call order, in two
+        # lists of their own so `appended`'s tuple keeps its shape.
+        self.statuses: list[str | None] = []
+        self.fallbacks: list[FallbackRef | None] = []
+        # True = behave like the module that DROPPED the fallback it was sent.
+        self._drop_fallback = drop_fallback
         self.route_reads: list[str] = []
         self.scope_reads: list[str] = []
         # س-32 — every read of an EXISTING thread's space, recorded like the
@@ -1291,6 +1303,8 @@ class _FakeThreads:
         attachments: tuple[str, ...] = (),
         token_count: int | None = None,
         citations: tuple[CitationRef, ...] | None = None,
+        status: str | None = None,
+        fallback: FallbackRef | None = None,
     ) -> AppendedMessage:
         if self._known is not None and conversation_id != self._known:
             raise NotFoundError("conversation not found")
@@ -1298,6 +1312,8 @@ class _FakeThreads:
             raise ConflictError("write lost a race")
         self.appended.append((conversation_id, role, text, attachments, token_count))
         self.citations.append(citations)
+        self.statuses.append(status)
+        self.fallbacks.append(fallback)
         self._seq += 1
         return AppendedMessage(
             id=f"msg-{self._seq}",
@@ -1309,6 +1325,8 @@ class _FakeThreads:
             seq=self._seq,
             created_at=utc_now(),
             citations=None if self._drop_citations else citations,
+            status=status,
+            fallback=None if self._drop_fallback else fallback,
         )
 
 
@@ -2309,6 +2327,8 @@ async def test_a_workflow_step_is_never_waiting_on_an_answer() -> None:
 # nobody reads a thin count there as evidence that readers rarely leave.
 _ENGLISH_MARKER = "This answer was cut off"
 _ARABIC_MARKER = "انقطعت"
+_ENGLISH_MARKER_FULL = "⚠️ This answer was cut off before it finished."
+_ARABIC_MARKER_FULL = "⚠️ انقطعت الإجابةُ قبل اكتمالها."
 
 
 class _CutOffAgent(BaseAgent):
@@ -3056,3 +3076,187 @@ async def test_a_failed_reply_write_delivers_final_without_message_id_and_does_n
     assert [e.type for e in events][-1] == "final"
     assert "message_id" not in events[-1].data
     assert events[-1].data["citations"] == [_cite()]
+
+
+# --------------------------------------------------------------------------- #
+# th-2 -- the status and the fallback each writer states                       #
+# --------------------------------------------------------------------------- #
+async def test_a_turn_that_reached_final_is_stored_complete_with_no_fallback() -> None:
+    threads = _FakeThreads(known="conv-1")
+
+    await _drive(_turn_orchestrator(_RecordingAgent, threads), "recording")
+
+    # the user's turn states nothing; the assistant's states `complete`
+    assert threads.statuses == [None, "complete"]
+    assert threads.fallbacks == [None, None]
+
+
+async def test_a_timed_out_turn_is_stored_partial() -> None:
+    threads = _FakeThreads(known="conv-1")
+
+    await _drive(_cut_orchestrator(_CutOffAgent, threads), "cutoff")
+
+    assert threads.statuses == [None, "partial"]
+    assert threads.fallbacks[-1] is None
+
+
+async def test_a_turn_whose_agent_failed_after_tokens_is_stored_partial() -> None:
+    threads = _FakeThreads(known="conv-1")
+
+    await _drive(_cut_orchestrator(_HalfAnswerThenFailAgent, threads), "half-boom")
+
+    assert threads.statuses == [None, "partial"]
+
+
+async def test_an_abandoned_stream_is_stored_partial() -> None:
+    threads = _FakeThreads(known="conv-1")
+    orchestrator = _cut_orchestrator(_CutOffAgent, threads, cap_s=None)
+
+    stream = await orchestrator.invoke(
+        _ctx(), "cutoff", AgentRequest(conversation_id="conv-1", input={"text": "hi"})
+    )
+    assert (await stream.__anext__()).type == "token"
+    await stream.aclose()
+
+    assert threads.statuses == [None, "partial"]
+
+
+class _MarkerQuotingAgent(BaseAgent):
+    """A complete answer whose text happens to quote both cut-off sentences."""
+
+    metadata = _metadata("quoter", capabilities=frozenset())
+    text = f"{_ARABIC_MARKER_FULL} / {_ENGLISH_MARKER_FULL}"
+
+    async def initialize(self) -> None:
+        return None
+
+    async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        yield AgentEvent(type="final", data={"text": type(self).text})
+
+
+async def test_the_status_is_never_inferred_from_the_text() -> None:
+    """FR-3: an answer that quotes the cut-off sentence is still `complete`."""
+    threads = _FakeThreads(known="conv-1")
+
+    await _drive(_turn_orchestrator(_MarkerQuotingAgent, threads), "quoter")
+
+    assert threads.statuses == [None, "complete"]
+    assert _assistant_messages(threads) == [_MarkerQuotingAgent.text]
+
+
+async def test_a_clarifying_question_is_stored_complete() -> None:
+    threads = _FakeThreads(known="conv-1")
+
+    events = await _drive(_turn_orchestrator(_AskingAgent, threads), "asking")
+
+    assert threads.statuses == [None, "complete"]
+    assert "pending_clarification" not in events[-1].data
+
+
+async def test_a_media_agents_queued_job_is_stored_complete_and_its_frame_keeps_its_status() -> (
+    None
+):
+    threads = _FakeThreads(known="conv-1")
+
+    events = await _drive(_turn_orchestrator(_JobAgent, threads), "job")
+
+    assert threads.statuses == [None, "complete"]
+    assert threads.fallbacks == [None, None]
+    assert events[-1].data["status"] == "queued"  # the job's status, untouched (FR-9)
+    assert json.loads(_assistant_messages(threads)[0])["status"] == "queued"
+
+
+async def test_the_final_frame_gains_no_status_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    events, _threads = await _cited_turn(monkeypatch, {})
+
+    assert set(events[-1].data) == {"text", "message_id", "content", "usage"}
+    assert "message_status" not in events[-1].data
+
+
+async def test_the_user_turn_states_neither_status_nor_fallback() -> None:
+    threads = _FakeThreads(known="conv-1")
+
+    await _drive(_turn_orchestrator(_RecordingAgent, threads), "recording")
+
+    assert threads.statuses[0] is None
+    assert threads.fallbacks[0] is None
+
+
+async def test_an_agent_that_puts_a_fallback_key_on_its_final_does_not_make_it_a_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D-ت5 / AC-2.5: the stored fallback is the platform's own record."""
+    fallback = {"from": {"provider": "openai"}, "to": {"provider": "ollama"}}
+
+    events, threads = await _cited_turn(monkeypatch, {"fallback": fallback})
+
+    assert threads.fallbacks[-1] is None
+    assert events[-1].data["fallback"] == fallback  # the frame keeps the agent's key
+
+
+def _resolved(provider: str, model: str, api_key: str = "sk-secret") -> ResolvedLLM:
+    class _Named:
+        pass
+
+    named = _Named()
+    named.provider = provider  # type: ignore[attr-defined]
+    return ResolvedLLM(provider=named, model=model, api_key=api_key)  # type: ignore[arg-type]
+
+
+def _switched_state(*, switched: bool = True) -> _Fallback:
+    return _Fallback(
+        primary=_resolved("openai", "gpt-4.1-mini"),
+        target=_resolved("ollama", "gemma3:1b"),
+        notice="notice",
+        switched=switched,
+    )
+
+
+def test_a_switched_turn_records_describes_four_values() -> None:
+    state = _switched_state()
+
+    ref = _stored_fallback(state)
+
+    assert ref == FallbackRef("openai", "gpt-4.1-mini", "ollama", "gemma3:1b")
+    described = state.describe()
+    assert described == {
+        "from": {"provider": ref.from_provider, "model": ref.from_model},
+        "to": {"provider": ref.to_provider, "model": ref.to_model},
+    }
+
+
+def test_a_turn_the_primary_lost_without_a_switch_records_none() -> None:
+    assert _stored_fallback(_switched_state(switched=False)) is None
+    assert _stored_fallback(None) is None
+
+
+def test_the_stored_fallback_carries_no_credential() -> None:
+    ref = _stored_fallback(_switched_state())
+
+    assert ref is not None
+    assert "sk-secret" not in repr(ref)
+
+
+def test_a_dropped_fallback_warns_once_without_naming_a_model(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("WARNING", logger="app.agents.orchestrator")
+    sent = FallbackRef("openai", "gpt-4.1-mini", "ollama", "gemma3:1b")
+    stored = AppendedMessage(
+        id="m",
+        conversation_id="c",
+        role="assistant",
+        text="t",
+        attachments=(),
+        token_count=None,
+        seq=1,
+        created_at=utc_now(),
+    )
+
+    _warn_if_fallback_dropped("conv-1", sent, stored)
+    _warn_if_fallback_dropped("conv-1", None, stored)
+
+    (record,) = [r for r in caplog.records if r.message == "orchestrator.fallback_not_recorded"]
+    assert record.conversation_id == "conv-1"  # type: ignore[attr-defined]
+    assert "gpt-4.1-mini" not in caplog.text
+    assert "gemma3" not in caplog.text

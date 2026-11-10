@@ -780,6 +780,9 @@ _SUMMARY_TIMEOUT_REASON = "building this summary exceeded the {seconds:g}s limit
 # `ConversationThreads` states for `kind` -- a caller that imported the enum
 # would be importing another module's domain to say one word.
 _ROLE_ASSISTANT = "assistant"
+# th-2 -- a delivered summary (or its failure notice) is a whole message: the
+# JOB's outcome is told in the text, as a media agent's job status is.
+_STATUS_COMPLETE = "complete"
 
 
 def build_knowledge_summary_handler(
@@ -1084,6 +1087,7 @@ def build_knowledge_summary_delivery_handler(
                     # the document's beginning. ب-7ج -- prefixed by the file's
                     # name when one could be read. Unchanged text otherwise.
                     text=delivered_summary_text(summary, file_name),
+                    status=_STATUS_COMPLETE,
                 )
         except AppError as exc:
             _logger.info(
@@ -1176,6 +1180,7 @@ def build_knowledge_summary_failure_handler(
                     conversation_id,
                     role=_ROLE_ASSISTANT,
                     text=delivered_failure_text(data["reason"], file_name),
+                    status=_STATUS_COMPLETE,
                 )
         except AppError as exc:
             _logger.info(

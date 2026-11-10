@@ -1354,6 +1354,15 @@ components:
           maxItems: 50
           items: { $ref: "#/components/schemas/Citation" }
           description: "Sources the assistant answered from, stored with the message (gap th-1) and equal to the `citations` of that turn's `final` frame. Always present. `null` = none recorded (user messages, messages saved before this field, agents that emit none, cut-off replies, workflow step outputs). `[]` = the agent stated there are no sources. A snapshot taken at answer time: a later rename or delete of the file does not change it."
+        status:
+          type: string
+          nullable: true
+          enum: [complete, partial]
+          description: "How the assistant turn that wrote this message ended (gap th-2). Set by the code path that wrote the message, never inferred from its text: an answer that quotes the cut-off sentence is still `complete`. `complete` = the turn reached `final` (this includes a clarifying question, a fixed apology, a media agent's queued job, a workflow step output and a delivered document summary). `partial` = the turn was cut after it had streamed text (total-time cap, provider failure mid-answer, platform fault, or the reader left); the stored text still ends with the cut-off sentence. Always present. `null` = not recorded: user messages, and every message saved before this field. A turn cut before its first token stores no message, so it never appears here (th-3). Clients must treat a value they do not know as not complete."
+        fallback:
+          allOf: [{ $ref: "#/components/schemas/MessageFallback" }]
+          nullable: true
+          description: "Set when the local model answered instead of the conversation's cloud model (capacity-plan 6.4), complete or partial; equal to the `fallback` key of that turn's `final` frame. The stored text still starts with the fallback sentence. Always present. `null` = the primary model answered, or not recorded (user messages, messages saved before this field). A stream the primary model started and then lost after its first chunk is not a fallback (`null`). Route-level names only, never a credential."
         token_count: {type: integer, nullable: true}
         seq: {type: integer}
         created_at: {type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$"}
@@ -1367,6 +1376,19 @@ components:
         page: {type: integer, nullable: true, minimum: 1}
         chunk_id: {type: string, format: uuid}
         rank: {type: integer, minimum: 1, description: "One-based retrieval rank, as emitted; never re-ordered."}
+    MessageFallback:
+      type: object
+      required: [from, to]
+      description: "The model the conversation asked for (`from`) and the local model that answered (`to`) -- the shape of `final.fallback` and of the `notice` frame's `from`/`to` (03 §3.1)."
+      properties:
+        from: { $ref: "#/components/schemas/ProviderModel" }
+        to: { $ref: "#/components/schemas/ProviderModel" }
+    ProviderModel:
+      type: object
+      required: [provider, model]
+      properties:
+        provider: {type: string, minLength: 1, maxLength: 255}
+        model: {type: string, minLength: 1, maxLength: 255}
     MessageCreateIn:
       type: object
       required: [content]

@@ -61,6 +61,22 @@ class CitationRef:
 
 
 @dataclass(frozen=True, slots=True)
+class FallbackRef:
+    """A 6.4 fallback as it crosses the port (th-2) -- plain fields, no rules.
+
+    Flat for CitationRef's reason (the caller must not import this module's
+    domain), and flat rather than {from, to} because `from` is a Python
+    keyword. The rules live on `domain.MessageFallback`; the API renders the
+    `{from: {provider, model}, to: {...}}` shape `final.fallback` has.
+    """
+
+    from_provider: str
+    from_model: str
+    to_provider: str
+    to_model: str
+
+
+@dataclass(frozen=True, slots=True)
 class AppendedMessage:
     """What a caller gets back after writing one turn into a thread.
 
@@ -82,6 +98,11 @@ class AppendedMessage:
     # th-1 -- what was STORED, which can be None even when citations were sent
     # (the module dropped them as malformed). Last and defaulted.
     citations: tuple[CitationRef, ...] | None = None
+    # th-2 -- what was STORED. `status` crosses as a plain str, like `role`
+    # ("complete" | "partial" | None). `fallback` can be None even when one
+    # was sent (the module dropped it as malformed). Last and defaulted.
+    status: str | None = None
+    fallback: FallbackRef | None = None
 
 
 class ConversationThreads(Protocol):
@@ -130,6 +151,8 @@ class ConversationThreads(Protocol):
         attachments: tuple[str, ...] = (),
         token_count: int | None = None,
         citations: tuple[CitationRef, ...] | None = None,
+        status: str | None = None,
+        fallback: FallbackRef | None = None,
     ) -> AppendedMessage: ...
 
     async def routed_model(self, ctx: ExecutionContext, conversation_id: Uuid) -> str | None:

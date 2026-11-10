@@ -510,6 +510,30 @@ def test_the_contract_publishes_message_citations_as_the_app_serves_them() -> No
     }
 
 
+def test_the_contract_publishes_message_status_and_fallback_as_the_app_serves_them() -> None:
+    """th-2 -- ``MessageOut.status``/``fallback`` and the ``MessageFallback`` and
+    ``ProviderModel`` schemas in ``openapi.yaml`` are the ones the app serves, and
+    both keys are always there."""
+    schemas = SPEC["components"]["schemas"]
+    live = LIVE["components"]["schemas"]
+
+    assert set(schemas["MessageOut"]["properties"]) == set(live["MessageOut"]["properties"])
+    for key in ("status", "fallback"):
+        assert key in schemas["MessageOut"]["properties"]
+        assert key in live["MessageOut"]["required"]  # present on every response
+    status = schemas["MessageOut"]["properties"]["status"]
+    assert status["enum"] == ["complete", "partial"]
+    assert status["nullable"] is True
+    # the alias is what puts `from` (not `from_`) on the wire
+    assert set(live["MessageFallback"]["properties"]) == {"from", "to"}
+    assert set(schemas["MessageFallback"]["properties"]) == {"from", "to"}
+    assert set(schemas["MessageFallback"]["required"]) == {"from", "to"}
+    assert set(live["MessageFallback"]["required"]) == {"from", "to"}
+    for doc in (schemas, live):
+        assert set(doc["ProviderModel"]["required"]) == {"provider", "model"}
+        assert set(doc["ProviderModel"]["properties"]) == {"provider", "model"}
+
+
 def test_a_timestamp_on_the_wire_ends_in_z() -> None:
     """The serialized form, not the declared one.
 
