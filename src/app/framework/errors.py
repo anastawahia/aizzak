@@ -250,6 +250,7 @@ class AppError(Exception):
         *,
         code: str | None = None,
         status: int | None = None,
+        extensions: Mapping[str, str] | None = None,
     ) -> None:
         if code is not None:
             self.code = code
@@ -268,6 +269,10 @@ class AppError(Exception):
         if status is not None:
             self.status = status
         self.detail = detail or self.code
+        # th-3 -- RFC 9457 extension members (§3.2), ids only. The API renders a
+        # CLOSED subset of names (`api/errors.PROBLEM_EXTENSION_KEYS`); empty is
+        # the norm. Read-only so a handler cannot mutate a shared error.
+        self.extensions: Mapping[str, str] = MappingProxyType(dict(extensions or {}))
         super().__init__(self.detail)
 
 
@@ -344,8 +349,9 @@ class RateLimitedError(AppError):
         code: str | None = None,
         status: int | None = None,
         retry_after_s: int | None = None,
+        extensions: Mapping[str, str] | None = None,
     ) -> None:
-        super().__init__(detail, code=code, status=status)
+        super().__init__(detail, code=code, status=status, extensions=extensions)
         # Guarded rather than trusted: RFC 9110's delay-seconds is a
         # non-negative integer, and a `Retry-After: 0` (or negative) header
         # invites the immediate retry a 429 exists to prevent. A bad value is
