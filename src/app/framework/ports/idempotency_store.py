@@ -16,18 +16,24 @@ client is most likely to be retrying. The ledger this port models is the same
 DD-09 shape ``platform.processed_events`` already uses for consumer dedup, on
 the same durable store, for the same reason.
 
-**Claim FIRST, complete after** — the ordering is the whole contract:
+**Claim FIRST, checkpoint and complete after** — the ordering is the whole contract:
 
 * ``claim`` inserts the key row in its own committed transaction, so a
   concurrent second request with the same key SEES it. The 23505 on the
   primary key is what makes "only one of us runs" true, rather than a
   read-then-write both callers pass.
+* ``checkpoint`` (th-3) stores a PROVISIONAL body on a claim that has not
+  completed: the operation has had an effect but has no answer yet. The row
+  keeps ``completed_at IS NULL``, so a repeat still meets ``IN_PROGRESS``
+  (and reads the provisional body and the claim's age).
 * ``complete`` fills in the response the first caller produced, which is what
-  a later repeat replays.
+  a later repeat replays. It replaces any provisional body.
 * ``release`` removes an unfinished claim when the handler RAISED, so a failed
   attempt does not brick the key forever. Without it, one 500 would make every
   future retry of that key a conflict — turning a transient failure into a
-  permanent one, on the same billable path this exists to protect.
+  permanent one, on the same billable path this exists to protect. A claim
+  that has a provisional body is NOT removed: an operation that has had an
+  effect must not free its key.
 
 The port is deliberately narrow on the response side: a JSON body, nothing
 else. **No status code**, because there is nothing to reproduce — a replay
@@ -68,12 +74,16 @@ class ClaimOutcome(Enum):
 
 @dataclass(frozen=True, slots=True)
 class IdempotencyClaim:
-    """``claim``'s result. ``response_body`` is populated for ``REPLAY`` and is
-    ``None`` for every other outcome — there is no stored response to give back
-    yet, and inventing one would be a fabricated success."""
+    """``claim``'s result. REPLAY: ``response_body`` is the completed body.
+    IN_PROGRESS: ``response_body`` is the provisional body ``checkpoint``
+    stored (``None`` when there is none) and ``age_s`` is the seconds since the
+    claim, on the DATABASE clock (``None`` when the row vanished under us).
+    Every other outcome: both ``None`` — there is no stored response to give
+    back, and inventing one would be a fabricated success."""
 
     outcome: ClaimOutcome
     response_body: Json | None = None
+    age_s: float | None = None
 
 
 class IdempotencyStore(Protocol):
@@ -90,8 +100,18 @@ class IdempotencyStore(Protocol):
         self, ctx: ExecutionContext, *, endpoint: str, key: str, request_hash: str
     ) -> IdempotencyClaim: ...
 
+    async def checkpoint(
+        self, ctx: ExecutionContext, *, endpoint: str, key: str, response_body: Json
+    ) -> None:
+        """Store a PROVISIONAL body on an UNFINISHED claim (th-3). ``completed_at``
+        stays NULL, so a repeat still meets ``IN_PROGRESS``; ``complete`` replaces
+        it; ``release`` no longer removes the row."""
+        ...
+
     async def complete(
         self, ctx: ExecutionContext, *, endpoint: str, key: str, response_body: Json
     ) -> None: ...
 
-    async def release(self, ctx: ExecutionContext, *, endpoint: str, key: str) -> None: ...
+    async def release(self, ctx: ExecutionContext, *, endpoint: str, key: str) -> None:
+        """Drop a claim that is neither completed NOR checkpointed."""
+        ...

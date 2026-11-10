@@ -18,9 +18,10 @@ statement error, 25P02).
    this table does (migration ``0002_idempotency_keys``): a role can read only
    its own workspace's rows, and only through a session that set
    ``app.workspace_id``.
-2. **It updates and deletes.** ``complete`` fills the stored response;
+2. **It updates and deletes.** ``checkpoint`` stores a provisional body on a
+   claim that has had an effect (th-3); ``complete`` fills the stored response;
    ``release`` removes a claim whose operation RAISED, so one 500 does not make
-   a key permanently unusable.
+   a key permanently unusable -- but never one that was checkpointed.
 3. **It commits the claim on its own.** The ledger's claim joins the handler's
    unit of work by design (DD-09: «داخل معاملة الأثر»). This one must NOT — an
    uncommitted claim is invisible to the concurrent duplicate it exists to
@@ -119,6 +120,31 @@ class SqlIdempotencyStore:
             raise _translate(exc) from exc
         return IdempotencyClaim(ClaimOutcome.CLAIMED)
 
+    async def checkpoint(
+        self, ctx: ExecutionContext, *, endpoint: str, key: str, response_body: Json
+    ) -> None:
+        """Store a PROVISIONAL body on an UNFINISHED claim (th-3).
+
+        ``completed_at`` is untouched (and ``completed_at IS NULL`` is in the
+        predicate, so a late checkpoint can never overwrite a completed body):
+        a repeat still meets ``IN_PROGRESS``, now with the body and the age.
+        """
+        stmt = (
+            update(idempotency_keys)
+            .where(
+                idempotency_keys.c.workspace_id == ctx.workspace_id,
+                idempotency_keys.c.endpoint == endpoint,
+                idempotency_keys.c.idempotency_key == key,
+                idempotency_keys.c.completed_at.is_(None),
+            )
+            .values(response_body=response_body)
+        )
+        try:
+            async with self._tenant_session(ctx) as session:
+                await session.execute(stmt)
+        except DBAPIError as exc:
+            raise _translate(exc) from exc
+
     async def complete(
         self, ctx: ExecutionContext, *, endpoint: str, key: str, response_body: Json
     ) -> None:
@@ -150,13 +176,16 @@ class SqlIdempotencyStore:
         ``completed_at IS NULL`` in the predicate is not belt and braces: it is
         what stops a late/duplicated release from deleting a row that has
         already recorded a real response, which would silently un-protect a key
-        whose operation actually succeeded.
+        whose operation actually succeeded. ``response_body IS NULL`` (th-3) is
+        the same guard for a CHECKPOINTED claim: its operation has had an
+        effect, so its key must not be freed.
         """
         stmt = delete(idempotency_keys).where(
             idempotency_keys.c.workspace_id == ctx.workspace_id,
             idempotency_keys.c.endpoint == endpoint,
             idempotency_keys.c.idempotency_key == key,
             idempotency_keys.c.completed_at.is_(None),
+            idempotency_keys.c.response_body.is_(None),
         )
         try:
             async with self._tenant_session(ctx) as session:
@@ -177,6 +206,9 @@ class SqlIdempotencyStore:
             idempotency_keys.c.request_hash,
             idempotency_keys.c.response_body,
             idempotency_keys.c.completed_at,
+            # th-3 -- the claim's age on the DATABASE clock (same clock that
+            # stamped created_at), so no app instance's drift decides staleness.
+            func.extract("epoch", func.now() - idempotency_keys.c.created_at).label("age_s"),
         ).where(
             idempotency_keys.c.workspace_id == ctx.workspace_id,
             idempotency_keys.c.endpoint == endpoint,
@@ -192,7 +224,11 @@ class SqlIdempotencyStore:
         if row["request_hash"] != request_hash:
             return IdempotencyClaim(ClaimOutcome.MISMATCH)
         if row["completed_at"] is None:
-            return IdempotencyClaim(ClaimOutcome.IN_PROGRESS)
+            return IdempotencyClaim(
+                ClaimOutcome.IN_PROGRESS,
+                response_body=row["response_body"],
+                age_s=float(row["age_s"]),
+            )
         return IdempotencyClaim(ClaimOutcome.REPLAY, response_body=row["response_body"])
 
 

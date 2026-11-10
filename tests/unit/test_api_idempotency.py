@@ -15,7 +15,7 @@ import asyncio
 import pytest
 from pydantic import BaseModel
 
-from app.api.v1.idempotency import idempotent, request_hash
+from app.api.v1.idempotency import guard_key, idempotent, request_hash
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ConflictError, ValidationError
 from tests.unit.support_idempotency import InMemoryIdempotencyStore
@@ -274,3 +274,31 @@ async def test_an_unusable_key_is_a_422_before_any_store_call(key: str) -> None:
         )
 
     assert store.claims == []
+
+
+async def test_a_checkpointed_body_is_ignored_by_idempotent_while_in_progress() -> None:
+    """th-3: ``idempotent()`` never checkpoints, and a provisional body that
+    shows up with IN_PROGRESS (another flow's) changes nothing for it: still 409."""
+    store = InMemoryIdempotencyStore()
+    ctx = _ctx()
+    body = _In(name="a")
+    await store.claim(ctx, endpoint="POST /files", key="k", request_hash=request_hash(body))
+    await store.checkpoint(ctx, endpoint="POST /files", key="k", response_body={"id": "x"})
+
+    with pytest.raises(ConflictError):
+        await idempotent(
+            store,
+            ctx,
+            endpoint="POST /files",
+            key="k",
+            body=body,
+            model=_Out,
+            run=_done,
+        )
+
+
+@pytest.mark.parametrize("key", ["", "   ", "x" * 256])
+def test_guard_key_is_public_and_rejects_unusable_keys(key: str) -> None:
+    with pytest.raises(ValidationError):
+        guard_key(key)
+    guard_key("a-key")

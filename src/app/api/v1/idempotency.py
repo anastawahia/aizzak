@@ -37,9 +37,14 @@ one place a reader looks: the route.
   blocking would hold a connection on a request whose sibling may take minutes.
   409 tells the client "your other attempt is live", and it is retryable.
 
-**What is NOT covered, stated rather than hidden:** the streaming answer of
-``runWorkflow``. An SSE stream is consumed, not stored, so there is no response
-body to replay and no honest way to fake one — see ``routers/workflows.py``.
+**What is NOT covered by ``idempotent()``, stated rather than hidden:** the
+streaming answer of ``runWorkflow`` (an SSE stream is consumed, not stored, so
+there is no response body to replay -- see ``routers/workflows.py``), and
+``postMessage`` (th-3), whose turn has an effect (a stored question, a billed
+run) BEFORE it has an answer: it has its own flow in ``idempotent_turn.py`` that
+uses the store's ``checkpoint``. ``idempotent()`` never checkpoints, so for its
+callers the provisional body is always ``NULL`` and nothing here changed.
+``guard_key`` is public because that flow reuses it.
 """
 
 from __future__ import annotations
@@ -65,9 +70,9 @@ IdempotencyKey = Annotated[
     Header(
         alias="Idempotency-Key",
         description=(
-            "Client-supplied key making a retry of this create safe. A repeat "
-            "with the same key and the same body returns the first response; a "
-            "repeat with a different body is a conflict."
+            "Client-supplied key making a retry of this operation safe. A repeat "
+            "with the same key and the same request returns the first outcome; a "
+            "repeat with a different request is a conflict. 1..255 characters."
         ),
     ),
 ]
@@ -116,7 +121,7 @@ async def idempotent[T: BaseModel](
     """
     if key is None:
         return await run()
-    _guard_key(key)
+    guard_key(key)
 
     claim = await store.claim(ctx, endpoint=endpoint, key=key, request_hash=request_hash(body))
     if claim.outcome is ClaimOutcome.REPLAY:
@@ -144,7 +149,7 @@ async def idempotent[T: BaseModel](
     return result
 
 
-def _guard_key(key: str) -> None:
+def guard_key(key: str) -> None:
     """Reject a key that cannot be a key. ``422`` (``common.validation_error``)
     rather than 409: nothing conflicted — the request itself is malformed."""
     if not key.strip():
