@@ -2,7 +2,8 @@
 
 # قبول مالك المنتج: ث‑2 حقل حالة الرسالة (`status` و`fallback`)
 
-- **الفرع:** `feat/data-search-message-status` على `e47c37e` (آخر commit للشيفرة `812bf9f`)، والأساس `master` على `0976bcb`.
+- **الفرع:** `feat/data-search-message-status` على `413f8cb` (آخر commit للشيفرة `812bf9f`، و`413f8cb` وثائق فقط: إصلاح AC‑5.2 وسطر AC‑1.11)، والأساس `master` على `0976bcb`.
+- **الدورة:** مرّتان. الأولى على `e47c37e` رفضت AC‑5.2 (وثيقة). والثانية على `413f8cb` تحققت من الإصلاح (انظر AC‑5.2).
 - **المصادر:** `stories.md` (6 قصص و48 معياراً، كلها Must)، و`test-plan.md` (QA PASS)، و`review.md` (PASS)، و`security-review.md` (PASS)، و`status.md` (ق‑1…ق‑4)، و`git diff 0976bcb..HEAD`.
 - **ما تحققت منه بنفسي:**
   - بحثت بـ `grep` عن كل اختبار يذكره `test-plan.md`، فوجدتها كلها على الفرع إلا `test_orchestrator.py::test_a_partial_reply_states_its_status_once`. حُذف هذا الاختبار في `812bf9f` (ملاحظة المراجعة 4)، ودليل AC‑1.11 البديل في الجدول.
@@ -90,9 +91,9 @@
 | AC | الدليل (اختبار/لقطة/مخرج) | الحكم |
 |---|---|---|
 | AC‑5.1 | `tests/unit/test_api_conventions.py::test_the_contract_publishes_message_status_and_fallback_as_the_app_serves_them`. وقرأت فرق `openapi.yaml`، وفيه: `status` من نوع string، وnullable، و`enum: [complete, partial]`، ودلالة `null`، و«never inferred from its text». و`fallback` nullable يشير إلى `MessageFallback` (`from`/`to` مطلوبان، وفي كل منهما `provider`/`model` مطلوبان من نوع string)، ووصفه «equal to the `fallback` key of that turn's `final` frame». وصياغة «primary lost» صُححت في `812bf9f` (ملاحظة المراجعة 2) | ✅ مقبول |
-| AC‑5.2 | **ما تحقق:** سطر `MessageOut` في §2 يذكر الحقلين (`03-api-spec.md:128`). و§3.1 يقول إن جواب النموذج المحلي يُحفظ معه `fallback` والجملة باقية (`:397`: «ويبدأ الردُّ المحفوظ بالجملة نفسِها… وتُحفظ القيمة نفسها مع الرسالة»). ويقول إن الدور المقطوع يُحفظ `partial` (`:406`). **ما ينقص:** لا يقول §3.1، ولا أي موضع في `03-api-spec.md`، إن نص الرسالة الجزئية **ما زال ينتهي بجملة الانقطاع**. وهذا هو الجزء «(والجملة تبقى)» من المعيار للحالة المقطوعة. بحثت عن «اكتمالها» و«cut off» في الملف فلم أجد شيئاً. والذكر الوحيد للجملة في `:117` يخص جواباً **يقتبسها**. أما `openapi.yaml` و`01 §2.4` و`06 §4` فتقول ذلك صراحة | 🔴 مرفوض |
+| AC‑5.2 | سطر `MessageOut` في §2 يذكر الحقلين (`03-api-spec.md:128`). و§3.1 يقول إن جواب النموذج المحلي يُحفظ معه `fallback` والجملة باقية (`:397`: «ويبدأ الردُّ المحفوظ بالجملة نفسِها… وتُحفظ القيمة نفسها مع الرسالة»). ويقول إن الدور المقطوع يُحفظ `partial` (`:406`). **الدورة 1 (`e47c37e`):** رُفض، لأن الملف لم يقل إن النص الجزئي ما زال ينتهي بجملة الانقطاع. **الدورة 2 (`413f8cb`):** قرأت الفرق بنفسي. فقرة «(ث‑2) حالة الرسالة» في `:406` تقول الآن: «وجملة الانقطاع تبقى في آخر ذلك النصّ كما كانت (`⚠️ انقطعت الإجابةُ قبل اكتمالها.` أو `⚠️ This answer was cut off before it finished.` بحسب لغة السؤال)، فالحقل يضاف إليها ولا يحلّ محلّها». الجملتان تطابقان حرفياً `_INCOMPLETE_MARKER_AR`/`_EN` في `orchestrator.py:438-439`. والتغيير وثيقة فقط، و`git diff --check 0976bcb..413f8cb` نظيف | ✅ مقبول |
 | AC‑5.3 | فرق `06-domain-models.md` §4: `Message` يحمل `status` و`fallback`، والثابت INV‑CV5 جديد. وعبارة «تحويلها إلى حقل قرارٌ لاحق» حُذفت. ويذكر الفرق صراحة «ينقض قرار ب‑10 رقم 1… الجملتان باقيتان في النص». وموافقة المالك على س‑1 هي ق‑2 | ✅ مقبول |
-| AC‑5.4 | `PAR::test_the_status_and_fallback_columns_are_spelled_the_same_everywhere`، و`PAR::test_status_and_fallback_are_nullable_without_a_default`، و`PAR::test_fallback_writes_sql_null_for_none`، و`PAR::test_the_status_check_is_added_not_valid_and_never_validated` (لا إعادة كتابة للجدول)، و`PAR::test_the_status_migration_downgrade_drops_the_constraint_and_both_columns`، و`PAR::test_the_status_migration_continues_the_chain`. كلها خضراء. وتطبيق الترحيل فعلاً (`MIG::test_downgrade_then_upgrade_round_trips_and_an_old_row_survives`) يثبت في CI `integration`، وهذا شرط الدمج أدناه | ✅ مقبول (بشرط CI) |
+| AC‑5.4 | `PAR::test_the_status_and_fallback_columns_are_spelled_the_same_everywhere`، و`PAR::test_status_and_fallback_are_nullable_without_a_default`، و`PAR::test_fallback_writes_sql_null_for_none`، و`PAR::test_the_status_check_is_added_not_valid_and_never_validated` (لا إعادة كتابة للجدول)، و`PAR::test_the_status_migration_downgrade_drops_the_constraint_and_both_columns`، و`PAR::test_the_status_migration_continues_the_chain`. كلها خضراء. وتطبيق الترحيل فعلاً (`MIG::test_downgrade_then_upgrade_round_trips_and_an_old_row_survives`) يثبت في CI `integration`، وهذا شرط الدمج أدناه | ✅ مقبول ساكناً، 🟡 التطبيق معلّق على CI |
 | AC‑5.5 | فرق `01-data-model.md` §2.4: العمودان، ودلالة `NULL` بلا backfill ولا DEFAULT، والقيد `ck_messages_status` بـ `NOT VALID` | ✅ مقبول |
 | AC‑5.6 | `orchestrator.py:427-437` يقول «ث-2 overturned it by owner decision (2026-11-10)… The sentence stays». وعبارة «not decided here» حُذفت (أكدتها المراجعة) | ✅ مقبول |
 | AC‑5.7 | فرق `gaps.md`: فقرة «الإصلاح (2026‑11‑10)» تحت ث‑2، وتذكر صراحة أن «فشل بلا رسالة» (سجل المحاولة) باقٍ في ث‑3 | ✅ مقبول |
@@ -102,12 +103,12 @@
 | AC | الدليل (اختبار/لقطة/مخرج) | الحكم |
 |---|---|---|
 | AC‑6.1 | `ROUTER::test_another_workspaces_history_is_a_404_with_no_status_or_fallback`: المساحة A ترى الرسالة (200)، والمساحة B تتلقى 404 بلا `status` ولا `fallback` | ✅ مقبول |
-| AC‑6.2 | `RLS::test_status_and_fallback_are_invisible_to_another_tenant` موجود على الفرع، وقرأته المراجعة الأمنية. **لكنه لم يُنفَّذ بعد.** المعيار نفسه يحدد أن دليله تشغيل CI `integration` (ق‑4)، والفرع لم يُدفع. فلا دليل منفَّذ حتى الآن. يصير ✅ حين يخضرّ CI `integration` على الـ PR | 🔴 مرفوض (بانتظار الدليل) |
+| AC‑6.2 | `RLS::test_status_and_fallback_are_invisible_to_another_tenant` موجود على الفرع، وقرأته المراجعة الأمنية. **لكنه لم يُنفَّذ بعد.** المعيار نفسه يحدد أن دليله تشغيل CI `integration` (ق‑4)، والفرع لم يُدفع. فلا دليل منفَّذ حتى الآن. يصير ✅ حين يخضرّ CI `integration` على الـ PR (كما عومل AC‑5.2 في ث‑1) | 🟡 معلّق على CI (ليس فشلاً) |
 | AC‑6.3 | `tests/unit/test_api_rbac.py::test_the_message_history_needs_conversations_read_and_a_refusal_leaks_no_citations` | ✅ مقبول |
 | AC‑6.4 | `ROUTER::test_a_bad_token_is_401_on_the_messages_route`، و`ROUTER::test_no_token_is_401_on_the_messages_route`، و`ROUTER::test_routes_require_a_bearer_token` | ✅ مقبول |
 | AC‑6.5 | `lint-imports` يعطي «Contracts: 9 kept, 0 broken» (المعيار يقول ثمانية والفعلي تسعة، انظر N‑1). وملف `.importlinter` بلا تغيير في الفرق. والمراجعة أكدت أن `conversations.domain` يستورد stdlib فقط (`enum`، `dataclasses`) | ✅ مقبول |
 
-**العدد:** 48 معياراً، كلها Must. **46 ✅** (منها 5 بمراجعة الوثائق: AC‑5.1 جزئياً، و5.3، و5.5، و5.6، و5.7، وواحد بشرط CI: AC‑5.4). و**2 🔴**: AC‑5.2 وAC‑6.2.
+**العدد:** 48 معياراً، كلها Must. **47 ✅** (منها 6 بمراجعة الوثائق: AC‑5.1 جزئياً، و5.2، و5.3، و5.5، و5.6، و5.7). و**1 🟡** معلّق على CI `integration`: AC‑6.2. و**0 🔴**. وجزءان حيان من معيارين ✅ معلّقان على CI أيضاً: تطبيق الترحيل في AC‑5.4، والتأكيد الحي في AC‑3.3.
 
 ## الكاتبان الإضافيان في `workers/bootstrap.py` (حكم النطاق)
 
@@ -126,21 +127,26 @@
 - **ملاحظة المراجعة 3:** `SQL::test_no_credential_can_reach_the_stored_fallback` لا يمكن أن يفشل. أقبل بقاءه، لأن AC‑2.6 مثبت بثلاثة اختبارات أخرى ذات معنى (انظر الجدول). ولم أعتمده دليلاً.
 - **N‑1:** `CLAUDE.md` يقول 8 عقود لـ `lint-imports`، والفعلي 9. توثيق خارج الميزة.
 - **N‑2:** المنفذ يُسقط اسم النموذج الطويل بصمت، والتحذير يصدر من المنسّق. مقبول في التصميم.
-- **`test-plan.md` سطر AC‑1.11:** ما زال يذكر الاختبار المحذوف `ORCH::test_a_partial_reply_states_its_status_once`. يُصحَّح في الدورة نفسها إلى `QA::test_a_machinery_failure_after_tokens_is_stored_partial`. لا يمنع القبول، لأن الدليل البديل موجود ومفحوص.
+- **`test-plan.md` سطر AC‑1.11:** كان يذكر الاختبار المحذوف `ORCH::test_a_partial_reply_states_its_status_once`. صُحِّح في `413f8cb` إلى `QA::test_a_machinery_failure_after_tokens_is_stored_partial`، مع ذكر الحذف في `812bf9f`. تحققت من السطر. مغلق.
 - **AC‑3.7:** الخليط في الاختبار يختلف عن نص المعيار، والمقصود ثابت (انظر الجدول).
 
 ## الحكم النهائي
 
-**مرفوض.** السبب: معياران من نوع Must ليسا ✅ بعد. لا خلل في الشيفرة: كل سلوك المنتج مثبت، و46 من 48 معياراً مقبولة.
+**مقبول بشرط نجاح CI integration.** وهي صيغة ث‑1 نفسها.
 
-1. **AC‑5.2: يعود إلى المرحلة 6 (backend-developer)، تعديل وثيقة فقط.**
-   - **المطلوب:** في `docs/design/03-api-spec.md` §3.1، في فقرة «(ث‑2) حالة الرسالة» (`:406`)، تُضاف جملة واحدة: نص الرسالة الجزئية ما زال ينتهي بجملة الانقطاع (`⚠️ انقطعت الإجابةُ قبل اكتمالها.` أو `⚠️ This answer was cut off before it finished.`) كما كان، والحقل يُضاف إلى الجملة ولا يحل محلها.
-   - **وفي الدورة نفسها:** يُصحَّح سطر AC‑1.11 في `test-plan.md`.
-   - **بعد التعديل:** تُعاد البوابات 1–5. وتكفي مراجعة code-reviewer للسطر وحده. ثم أعيد أنا فحص AC‑5.2 وحده.
-2. **AC‑6.2: لا يعود إلى مرحلة.** يحتاج دليلاً منفَّذاً فقط:
-   - يخضرّ CI job `integration` على الـ PR، ومعه `RLS` الأربعة و`MIG`.
-   - عندها يصير AC‑6.2 ✅، ويُستوفى شرط AC‑5.4 (الذهاب والإياب للترحيل) والجزء الحي من AC‑3.3.
-
-**شرط القبول النهائي:** يُصلَح AC‑5.2، ويخضرّ CI `integration`. عندها تصير المعايير الـ48 كلها ✅ وتنتقل الميزة إلى بوابة ② (الدمج، قرار بشري).
+- **الأسباب:**
+  - 47 من 48 معياراً Must ✅ بدليل منفَّذ أو بمراجعة وثيقة.
+  - لا معيار 🔴.
+  - المراجعتان (`review.md` و`security-review.md`) PASS بلا حاجب.
+- **سجل الدورتين:**
+  - **الدورة 1 (`e47c37e`):** رُفض AC‑5.2، لأن `03-api-spec.md` §3.1 لم يذكر أن جملة الانقطاع تبقى في النص الجزئي. وأُعيد إلى المرحلة 6 (وثيقة فقط).
+  - **الدورة 2 (`413f8cb`):** أُصلح AC‑5.2، وتحققت منه بنفسي. وصُحِّح سطر AC‑1.11 في `test-plan.md`.
+- **الشرط (م‑1):** يخضرّ CI job `integration` على الـ PR قبل بوابة ② (الدمج، قرار بشري)، ومعه `RLS` الأربعة و`MIG`. عندها:
+  - يصير AC‑6.2 ✅؛
+  - ويُستوفى تطبيق الترحيل والذهاب والإياب في AC‑5.4؛
+  - ويُستوفى التأكيد الحي في AC‑3.3.
+- **إن فشل CI `integration`:** يسقط القبول، ويعود البند الفاشل إلى المرحلة التي يخصها:
+  - المرحلة 5 (data-engineer) للترحيل؛
+  - أو المرحلة 6 (backend-developer) للمستودع/RLS.
 
 </div>
