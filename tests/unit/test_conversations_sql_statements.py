@@ -1,7 +1,7 @@
 """The SQL the conversations adapter runs for citations (gap th-1).
 
 No database: a recording session stands in for ``tenant_session`` and the
-statements it was handed are compiled with the PostgreSQL dialect. Live
+statements it was handed are compiled with the asyncpg dialect (the app driver). Live
 round trips and tenant isolation are in
 ``tests/integration/test_conversations_repository_rls.py`` (CI only).
 """
@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects.postgresql import asyncpg
 
 from app.framework.context.execution_context import ExecutionContext
 from app.modules.conversations.adapters import sql_repository
@@ -41,7 +41,7 @@ _CHUNK_2 = "0190bbbb-0000-7000-8000-000000000002"
 _NAME = "دليل الصيانة ٢٠٢٦.pdf"
 _NOW = datetime(2026, 11, 10, 9, 0, tzinfo=UTC)
 
-_PG = postgresql.dialect()
+_PG = asyncpg.dialect()
 
 
 def _ctx() -> ExecutionContext:
