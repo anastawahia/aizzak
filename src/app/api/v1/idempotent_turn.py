@@ -242,7 +242,9 @@ def _reap(
         )
 
 
-async def _shielded(write: Awaitable[None], *, conversation_id: Uuid, phase: str) -> None:
+async def _shielded(
+    write: Awaitable[None], *, conversation_id: Uuid = "-", phase: str = "write"
+) -> None:
     """Run the ledger write as its own task and await it through ``asyncio.shield``.
 
     The normal path awaits it to the end (and sees its failure). When the AWAITER
