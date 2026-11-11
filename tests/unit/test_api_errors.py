@@ -12,7 +12,16 @@ instead of raising inside a live stream.
 
 from __future__ import annotations
 
-from app.api.errors import problem, problem_from_error, problem_from_event
+from typing import Any
+
+import pytest
+
+from app.api.errors import (
+    PROBLEM_EXTENSION_KEYS,
+    problem,
+    problem_from_error,
+    problem_from_event,
+)
 from app.framework.errors import ERROR_CATALOG, AppError, NotFoundError
 
 _CORRELATION = "018f0000-0000-7000-8000-0000000000cc"
@@ -153,3 +162,67 @@ def test_an_explicit_status_still_wins_over_the_catalog() -> None:
     """
     assert problem_from_error(AppError("odd", code="foreign.thing", status=418))["status"] == 418
     assert problem_from_error(AppError("x", code="agent.failed", status=503))["status"] == 503
+
+
+def test_the_extension_members_are_a_closed_pair() -> None:
+    """th-3: two optional id members, nothing else may ever be rendered."""
+    assert PROBLEM_EXTENSION_KEYS == ("user_message_id", "message_id")
+
+
+def test_an_error_carries_its_extension_ids_into_the_problem() -> None:
+    exc = AppError(
+        "x", code="agent.failed", extensions={"user_message_id": "u1", "message_id": "m1"}
+    )
+
+    body = problem_from_error(exc)
+
+    assert body["user_message_id"] == "u1"
+    assert body["message_id"] == "m1"
+    assert dict(exc.extensions) == {"user_message_id": "u1", "message_id": "m1"}
+
+
+def test_a_name_outside_the_closed_set_is_never_rendered() -> None:
+    exc = AppError("x", extensions={"user_message_id": "u1", "text": "secret", "code": "evil"})
+
+    body = problem_from_error(exc)
+
+    assert "text" not in body
+    assert body["code"] == "common.internal"
+    assert body["user_message_id"] == "u1"
+
+
+def test_an_extension_never_overrides_a_core_member_and_empty_values_are_dropped() -> None:
+    body = problem(
+        "agent.failed",
+        502,
+        extensions={"user_message_id": "", "message_id": 7},
+    )
+
+    assert "user_message_id" not in body
+    assert "message_id" not in body
+    assert body["code"] == "agent.failed"
+    assert body["status"] == 502
+
+
+def test_an_in_band_event_payload_carries_the_ids_and_nothing_else_extra() -> None:
+    body = problem_from_event(
+        {
+            "code": "agent.failed",
+            "status": 502,
+            "detail": "d",
+            "user_message_id": "u1",
+            "job_id": "j",
+        }
+    )
+
+    assert body["user_message_id"] == "u1"
+    assert "job_id" not in body
+    assert "message_id" not in body
+
+
+def test_extensions_are_read_only() -> None:
+    exc = AppError("x", extensions={"user_message_id": "u1"})
+    view: Any = exc.extensions
+
+    with pytest.raises(TypeError):
+        view["user_message_id"] = "u2"

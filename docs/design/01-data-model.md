@@ -201,6 +201,7 @@ CREATE TABLE conversations.messages (
   citations       jsonb NULL,                       -- ث‑1 · لقطة مصادر جواب المساعد {document_id, file_name, page, chunk_id, rank} بترتيبها؛ NULL ⇒ لم يُسجَّل، '[]' ⇒ صرّح الوكيل بلا مصادر
   status          text NULL,                        -- ث‑2 · كيف انتهى الدور الذي كتب رسالة المساعد: 'complete' | 'partial'؛ NULL ⇒ لم يُسجَّل
   fallback        jsonb NULL,                       -- ث‑2 · {from:{provider,model}, to:{provider,model}} حين أجاب النموذج المحلي (6.4)؛ NULL ⇒ أجاب الأساسي أو لم يُسجَّل
+  reply_to        uuid NULL,                        -- ث‑3 · معرّف رسالة المستخدم التي يجيبها هذا المساعد، يُكتب في الإدراج نفسه؛ NULL ⇒ لم يُسجَّل
   CONSTRAINT ck_messages_status CHECK (status IN ('complete','partial')),   -- أُضيف NOT VALID في 0008
   CONSTRAINT fk_msg_conv FOREIGN KEY (conversation_id) REFERENCES conversations.conversations(id),
   CONSTRAINT uq_msg_seq UNIQUE (conversation_id, seq)
@@ -219,6 +220,15 @@ CREATE TABLE conversations.messages (
 -- (INV‑CV5، في الـ domain لا في القاعدة). القيد `NOT VALID` **ولا يُنفَّذ له VALIDATE عن قصد**: الصفوف القائمة كلّها
 -- `NULL` بالبناء (العمود وُلد في الترحيل نفسه) والـ CHECK يمرّر `NULL`، فالمسح الكامل لأكبر جدول في المنصة تحت
 -- `ACCESS EXCLUSIVE` لا يثبت شيئاً، وPostgres يفرض القيد على كل INSERT/UPDATE بعده. لا فهرس (إسقاطٌ لا شرط).
+-- `reply_to` (‏ث‑3، `conversations/0009_message_reply_to`): معرّف رسالة المستخدم التي تجيبها رسالة المساعد، بنوع `id`
+-- نفسه (`uuid`). يكتبه **الدور الذي كتب الرسالتين** (`_persist_reply` و`_persist_partial` فقط) في الإدراج نفسه، لأنّ ترتيب
+-- `seq` لا يكفي حين يتداخل دوران (WebSocket، جهازان على خيط واحد). `NULL` ⇒ لم يُسجَّل: رسائل المستخدم وكلّ صف قبل
+-- الترحيل ومخرجات خطوات الـworkflow وملخصات الـworker وصفوف `load_seed`، بلا backfill ولا DEFAULT. INV‑CV6: لرسائل
+-- `assistant` وحدها (في الـdomain). **لا FK عن قصد**: فحص FK في Postgres يتجاوز RLS فلا يثبت أنّ السؤال من المساحة نفسها
+-- ولا من المحادثة نفسها ولا أنّه رسالة `user`، ويقيّد ترتيب الحذف في `purge.py`. السلامة يفرضها المحوّل بإدراجٍ محروس
+-- في عبارة واحدة (`INSERT … SELECT … WHERE EXISTS (رسالة user في المحادثة نفسها)`) تحت RLS نفسها، فيُرفض ما لا يطابق بـ`ValidationError`
+-- بلا صف. يبقى المعرّف بعد حذف السؤال ناعماً (السؤال يغادر كل قراءة والرابط يبقى). لا فهرس (إسقاطٌ لا شرط) ولا CHECK،
+-- والترحيل `ADD COLUMN … NULL` تعديل catalog فقط. RLS والصلاحيات بلا تغيير.
 
 -- نطاق استرجاع الخيط: أي مستندات مساحة العمل يُجيب منها هذا الخيط (BE‑RAG‑005).
 -- الصفّ **مرجع** لا امتلاك: الملف يبقى على مستوى مساحة العمل ويُفهرَس مرّة واحدة في
@@ -744,7 +754,7 @@ CREATE TABLE platform.idempotency_keys (
   endpoint        text NOT NULL,
   idempotency_key text NOT NULL,
   request_hash    text NOT NULL,                  -- بصمة sha256، لا الجسد
-  response_body   jsonb,                          -- NULL ⇒ مُطالَبٌ به وقيد التنفيذ
+  response_body   jsonb,                          -- NULL ⇒ مُطالَبٌ به وقيد التنفيذ. وجسدٌ مع completed_at IS NULL ⇒ جسدٌ مؤقت (checkpoint، ث‑3): العملية أحدثت أثرها ولم تنتهِ، فلا يُحرَّر المفتاح
   created_at      timestamptz NOT NULL DEFAULT now(),
   completed_at    timestamptz,
   PRIMARY KEY (workspace_id, endpoint, idempotency_key)
@@ -754,7 +764,8 @@ CREATE INDEX ix_idempotency_keys_created ON platform.idempotency_keys(created_at
 - نظير §4.2 عند حدّ الـAPI لا حدّ المستهلك: عمليّةٌ قد تُسلَّم مرّتين يجب أن تُنفَّذ مرّة. الإدراج **أوّلاً** (وتعارض المفتاح الأساسيّ هو ما يجعل «واحدٌ فقط ينفّذ» صحيحاً تحت التزامن)، ثمّ يُملأ `response_body` بعد اكتمال العمليّة، وتُحذف المطالبة إن **رمَت** كي لا يتعطّل المفتاح للأبد.
 - **الجدول الوحيد في `platform` بسياسة RLS**: جسد الردّ المخزَّن بيانات مستأجر، خلافاً لـ`outbox`/`processed_events` اللذين لا يحملان عمود مستأجر أصلاً. السياسة بصيغة `NULLIF` المُصلَّبة (‏§3).
 - **الصلاحيات:** الجدول الوحيد في `platform` الذي يأخذ `SELECT, INSERT, UPDATE, DELETE` لـ`app_rw` — لأنّ غايته أن يُقرأ ويُحدَّث ويُحرَّر؛ ما يحصره هو RLS لا المنحة.
-- **الاحتفاظ:** كـ§4.2، لا سياسة احتفاظٍ في v1؛ `created_at` مفهرسٌ لأنّ كنسةً تشغيليّةً ستعمل عليه.
+- **مقبض الدور (ث‑3):** لـ`postMessage` (`POST /conversations/{id}/messages`) يحمل `response_body` مقبض الدور `{kind, v, conversation_id, user_message_id, seq, outcome, message_id, code, status, usage}`، بلا نص ولا `content` ولا `citations` ولا `detail`، فطوله ثابت تقريباً (~300 بايت) ولا يتبع طول الرسالة. `outcome` هو `accepted` (جسد مؤقت) أو `replied` أو `failed` (جسد كامل مع `completed_at`). و`release` لا يحذف مطالبةً لها جسد مؤقت.
+- **الاحتفاظ:** تكنس `ops-scheduler` يومياً الصفوف التي مضى على `created_at` فيها يومان (`IDEMPOTENCY_KEYS_RETENTION`، `src/app/ops/retention.py:140`)، فيعيش المفتاح بين يومين وثلاثة. والمفتاح بعد كنسه جديد. `created_at` مفهرسٌ لأنّ الكنسة تعمل عليه.
 
 ### 4.3 مواضع المجاري (اختياري للمراقبة)
 ```sql

@@ -23,6 +23,7 @@ path — the router is exercised end to end without a provider.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 
 from fastapi import FastAPI
@@ -411,6 +412,10 @@ def test_invoke_without_stream_returns_the_persisted_turn() -> None:
         ("user", "hello"),
         ("assistant", "hello"),
     ]
+    # th-3 (AC-2.1): the reply names the question it answers, in the same write.
+    assert body["message"]["reply_to"] == stored[0].id
+    assert stored[1].reply_to == stored[0].id
+    assert stored[0].reply_to is None
 
 
 def test_invoke_without_stream_returns_the_stored_citations() -> None:
@@ -540,3 +545,49 @@ def test_invoke_of_an_unknown_agent_leaves_no_orphan_thread() -> None:
     )
     assert stack.repository.rows == {}
     assert stack.repository.messages == {}
+
+
+def test_a_streamed_invoke_that_opens_a_thread_announces_it_in_the_first_frame() -> None:
+    """th-3 AC-1.6: no `conversation_id` in the request, a `space_id` instead --
+    `accepted` names the thread that was just opened, and `final` the question."""
+    app, stack = _make_app_with_store()
+    client = TestClient(app)
+
+    text = client.post(
+        "/api/v1/agents/echo/invoke",
+        headers=_auth(),
+        json={"space_id": _SPACE, "input": {"text": "hi"}, "stream": True},
+    ).text
+
+    frames = [
+        (block.splitlines()[0].removeprefix("event: "), json.loads(block.splitlines()[1][6:]))
+        for block in text.split("\n\n")
+        if block.strip()
+    ]
+    assert frames[0][0] == "accepted"
+    (conversation_id,) = stack.repository.messages
+    question = stack.repository.messages[conversation_id][0]
+    assert frames[0][1] == {
+        "conversation_id": conversation_id,
+        "user_message_id": question.id,
+        "seq": 1,
+    }
+    assert frames[-1][0] == "final"
+    assert frames[-1][1]["user_message_id"] == question.id
+
+
+def test_invoke_does_not_accept_an_idempotency_key_effect() -> None:
+    """th-3 q-11: `invokeAgent` has no key. Sending the header changes nothing:
+    two identical calls are two turns."""
+    app, stack = _make_app_with_store()
+    client = TestClient(app)
+    body = {"space_id": _SPACE, "input": {"text": "hello"}}
+
+    client.post(
+        "/api/v1/agents/echo/invoke", headers={**_auth(), "Idempotency-Key": "k"}, json=body
+    )
+    client.post(
+        "/api/v1/agents/echo/invoke", headers={**_auth(), "Idempotency-Key": "k"}, json=body
+    )
+
+    assert len(stack.repository.rows) == 2

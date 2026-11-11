@@ -534,6 +534,28 @@ def test_the_contract_publishes_message_status_and_fallback_as_the_app_serves_th
         assert set(doc["ProviderModel"]["properties"]) == {"provider", "model"}
 
 
+def test_the_contract_publishes_message_reply_to_and_the_problem_extensions() -> None:
+    """th-3 -- ``MessageOut.reply_to`` is on both sides and always present; the
+    two optional ``Problem`` extension members are declared in the contract and
+    stay a CLOSED pair; and ``postMessage`` declares the idempotency header (the
+    exact-set test above covers the operation list in both directions)."""
+    schemas = SPEC["components"]["schemas"]
+    live = LIVE["components"]["schemas"]
+
+    assert set(schemas["MessageOut"]["properties"]) == set(live["MessageOut"]["properties"])
+    assert "reply_to" in live["MessageOut"]["required"]  # present on every response
+    reply_to = schemas["MessageOut"]["properties"]["reply_to"]
+    assert reply_to["format"] == "uuid"
+    assert reply_to["nullable"] is True
+    assert "reply_to" not in schemas["MessageOut"].get("required", [])  # th-1 d-t7, th-2 d-t9
+    for key in ("user_message_id", "message_id"):
+        assert schemas["Problem"]["properties"][key]["format"] == "uuid"
+        assert key not in schemas["Problem"]["required"]
+    post_message = ("/api/v1/conversations/{}/messages", "post")
+    assert post_message in _declaring(SPEC, "Idempotency-Key", spec=True)
+    assert post_message in _declaring(LIVE, "Idempotency-Key", spec=False)
+
+
 def test_a_timestamp_on_the_wire_ends_in_z() -> None:
     """The serialized form, not the declared one.
 

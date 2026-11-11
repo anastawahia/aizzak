@@ -99,6 +99,16 @@ _TERMINAL_TYPES = frozenset({"final", "error"})
 WsPrincipal = Principal
 
 
+def _envelope_conversation_id(event: AgentEvent, requested: str | None) -> object:
+    """The request's id wins, as it always has -- except for an ``accepted``
+    frame of an invoke that named no thread, whose data carries the thread that
+    was just opened (th-3, d-t11): without this the first frame of such a turn
+    would announce ``conversation_id: null``."""
+    if requested is None and event.type == "accepted":
+        return event.data.get("conversation_id")
+    return requested
+
+
 class WsAuthenticator(Protocol):
     """Token → principal, or raise ``UnauthorizedError`` (any ``AppError``
     is treated as a refusal).
@@ -445,7 +455,11 @@ class _Connection:
                         conversation_id,
                     )
                 else:
-                    body = {**event.data, "type": event.type, "conversation_id": conversation_id}
+                    body = {
+                        **event.data,
+                        "type": event.type,
+                        "conversation_id": _envelope_conversation_id(event, conversation_id),
+                    }
                 await self._session.send_json(body)
                 if event.type in _TERMINAL_TYPES:
                     break

@@ -203,7 +203,7 @@ paths:
           description: Completion (JSON) or event stream (SSE)
           content:
             application/json: { schema: { $ref: "#/components/schemas/AgentInvokeOut" } }
-            text/event-stream: { schema: { type: string, description: "SSE: token|tool_call|notice|final|error events (notice: 03 §3.1, capacity-plan 6.4)" } }
+            text/event-stream: { schema: { type: string, description: "SSE: accepted (first, once the user message is stored), then token|tool_call|notice, then final|error (03 §3.1, capacity-plan 6.4). Ignore unknown frame types." } }
         default: { $ref: "#/components/responses/Problem" }
 
   /models:
@@ -281,15 +281,15 @@ paths:
     post:
       tags: [conversations]
       operationId: postMessage
-      description: "Append a user message and run the conversation's agent. SSE when Accept: text/event-stream."
-      parameters: [ { $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/CorrelationId" } ]
+      description: "Append a user message and run the conversation's agent. SSE when Accept: text/event-stream (or `stream: true`). The SSE body starts with an `accepted` frame `{conversation_id, user_message_id, seq}` as soon as the user message is stored, then `notice`?, `token`*, and `final` or `error`; clients must ignore any frame type they do not know. `final` and an in-flight `error` carry `user_message_id`; an `error` after a saved partial also carries its `message_id`. **Idempotency-Key (gap th-3):** scoped to (workspace, this conversation, key); the request is identified by `content` alone, so `stream`/`Accept` may differ on a retry and choose the shape of the answer. A repeat after the turn ended does not store a second question, does not run the agent and is not billed: JSON returns the same `MessageOut` (read from the stored row; 404 if it was deleted since) or the same problem; SSE returns two frames, `accepted` with `replayed: true` and then `final` or `error`. A repeat while the first attempt runs, or with a different `content`, is 409 `common.conflict`. A failure before the message is stored frees the key; a failure after it does not. An attempt whose server died is reported as `agent.failed` once `stream_max_duration_s` plus 120 s have passed since the key was first used. Keys are kept for 2 to 3 days (swept daily after 2); after that the same key starts a new turn. A replayed problem that carries `user_message_id` is the FINAL outcome for that key (do not retry with the same key); a 409 without ids means the key is still in flight. A replayed 429 carries no `Retry-After`. A `final` without `message_id` (but with `user_message_id`) means the text the client holds was NOT saved: retrying with the same key returns `accepted` (replayed) then `error` `agent.failed` (JSON: 502 `agent.failed` with `user_message_id`). The key is compared literally, without trimming. The replayed `final` frame has no `text`: read `content.text` (it may start with the fallback sentence). A replay requires `conversations:write` only (every role that holds it also holds `conversations:read` and `agents:invoke`). The stored fingerprint of `content` is an unsalted SHA-256 kept for the retention period."
+      parameters: [ { $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/CorrelationId" }, { $ref: "#/components/parameters/IdempotencyKey" } ]
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MessageCreateIn" } } } }
       responses:
         "200":
           description: Assistant reply (JSON) or SSE stream
           content:
             application/json: { schema: { $ref: "#/components/schemas/MessageOut" } }
-            text/event-stream: { schema: { type: string } }
+            text/event-stream: { schema: { type: string, description: "SSE: accepted (first, once the user message is stored), then token|notice, then final|error (03 §3.1). Ignore unknown frame types." } }
         default: { $ref: "#/components/responses/Problem" }
   /conversations/{id}/messages/{message_id}:
     delete:
@@ -1022,7 +1022,7 @@ components:
     # rather than a 404: a listing is not an existence oracle.
     SpaceId: { name: space_id, in: query, required: true, schema: { type: string, format: uuid } }
     CorrelationId: { name: X-Correlation-Id, in: header, required: false, schema: { type: string } }
-    IdempotencyKey: { name: Idempotency-Key, in: header, required: false, schema: { type: string } }
+    IdempotencyKey: { name: Idempotency-Key, in: header, required: false, description: "Makes a retry safe (03 §0). 1..255 characters. Kept for at least 2 days: the daily retention sweep removes keys older than 2 days, so a key lives 2 to 3 days; after that it is a new key.", schema: { type: string, minLength: 1, maxLength: 255 } }
   headers:
     CorrelationId:
       description: "Request correlation id, echoed on every response (generated if absent). See 03 §0."
@@ -1047,6 +1047,8 @@ components:
         instance: { type: string }
         code: { type: string, description: "stable machine code, e.g. files.too_large" }
         correlation_id: { type: string }
+        user_message_id: { type: string, format: uuid, description: "th-3 extension member (RFC 9457 §3.2): the user message a turn had already stored when it failed. Absent for any failure before that." }
+        message_id: { type: string, format: uuid, description: "th-3 extension member: the partial assistant message (`status: partial`) saved before the failure. Absent when nothing was saved." }
         errors:
           type: array
           items:
@@ -1363,6 +1365,11 @@ components:
           allOf: [{ $ref: "#/components/schemas/MessageFallback" }]
           nullable: true
           description: "Set when the local model answered instead of the conversation's cloud model (capacity-plan 6.4), complete or partial; equal to the `fallback` key of that turn's `final` frame. The stored text still starts with the fallback sentence. Always present. `null` = the primary model answered, or not recorded (user messages, messages saved before this field). A stream the primary model started and then lost after its first chunk is not a fallback (`null`). Route-level names only, never a credential."
+        reply_to:
+          type: string
+          format: uuid
+          nullable: true
+          description: "The id of the user message this assistant message answers (gap th-3), stored in the same write by the turn that wrote both, so two identical questions from two devices are never confused. Always present. `null` = not recorded: user messages, messages saved before this field, workflow step outputs and summaries delivered by a worker. A question soft-deleted later keeps its id here (the question itself leaves every read)."
         token_count: {type: integer, nullable: true}
         seq: {type: integer}
         created_at: {type: string, format: date-time, description: "UTC ISO-8601, trailing Z (DAT-06)", pattern: "Z$"}

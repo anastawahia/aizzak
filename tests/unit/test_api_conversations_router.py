@@ -29,8 +29,9 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from typing import ClassVar
+from typing import Any, ClassVar
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -38,13 +39,20 @@ from fastapi.testclient import TestClient
 from app.agents.orchestrator import AgentOrchestrator, OrchestratorDependencies
 from app.api.main import PROBLEM_MEDIA_TYPE, create_app
 from app.api.v1.dependencies import ApiServices, Principal
+from app.api.v1.idempotent_turn import (
+    IdempotentTurnLedger,
+    TurnHandle,
+    claim_turn,
+    content_hash,
+    stale_after_s,
+)
 from app.api.v1.websocket.streaming import WsPrincipal
 from app.framework.agent_runtime.base_agent import AgentEvent, AgentRequest, BaseAgent
 from app.framework.agent_runtime.executor import AgentLifecycleExecutor
 from app.framework.agent_runtime.metadata import AgentMetadata
 from app.framework.agent_runtime.registry import InMemoryAgentRegistry
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.errors import ConflictError, UnauthorizedError
+from app.framework.errors import ConflictError, RateLimitedError, UnauthorizedError
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.providers.resolver import ResolvedProvider
 from app.framework.settings import Settings
@@ -90,6 +98,15 @@ _ECHO_METADATA = AgentMetadata(
 )
 
 
+# th-3 -- one entry per agent run, so a test can prove a replay ran nothing.
+_RUNS: list[str] = []
+
+
+@pytest.fixture(autouse=True)
+def _reset_runs() -> None:
+    _RUNS.clear()
+
+
 class _EchoAgent(BaseAgent):
     metadata = _ECHO_METADATA
 
@@ -97,6 +114,7 @@ class _EchoAgent(BaseAgent):
         return None
 
     async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        _RUNS.append("echo")
         text = req.input.get("text")
         payload = text if isinstance(text, str) else ""
         yield AgentEvent(type="token", data={"delta": payload})
@@ -133,6 +151,7 @@ class _CitingAgent(BaseAgent):
         return None
 
     async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        _RUNS.append("citing")
         yield AgentEvent(type="token", data={"delta": "the answer"})
         data: dict[str, object] = {"text": "the answer"}
         if type(self).citations is not None:
@@ -165,6 +184,7 @@ class _HalfAgent(BaseAgent):
         return None
 
     async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+        _RUNS.append("half")
         yield AgentEvent(type="token", data={"delta": "الجواب هو"})
         raise ConflictError("the provider went away")
 
@@ -216,7 +236,11 @@ class _FakeWsAuth:
         raise AssertionError("not exercised")
 
 
-def _make_app(*, stream_max_duration_s: float | None = None) -> tuple[FastAPI, ConversationsStack]:
+def _make_app(
+    *,
+    stream_max_duration_s: float | None = None,
+    store: InMemoryIdempotencyStore | None = None,
+) -> tuple[FastAPI, ConversationsStack]:
     """The app plus the store behind it — tests assert on the wire AND on what
     was actually persisted, which is the whole point of 6.1-ج-3."""
     registry = InMemoryAgentRegistry()
@@ -250,9 +274,11 @@ def _make_app(*, stream_max_duration_s: float | None = None) -> tuple[FastAPI, C
         knowledge=_KNOWLEDGE.knowledge,
         integrations=_INTEGRATIONS.integrations,
         authorization=build_authorization(),
-        idempotency=InMemoryIdempotencyStore(),
+        idempotency=store if store is not None else InMemoryIdempotencyStore(),
     )
     app = create_app(services, http_authenticator=_FakeAuth(), ws_authenticator=_FakeWsAuth())
+    # th-3: the orchestrator, for the tests that drive a turn without the wire.
+    app.state.test_orchestrator = orchestrator
     return app, conversations
 
 
@@ -1628,3 +1654,849 @@ async def test_another_workspaces_history_is_a_404_with_no_status_or_fallback(
     assert "secret partial" not in response.text
     for leaked in ('status":"partial', 'fallback":{', "gemma3", "gpt-4.1"):
         assert leaked not in response.text
+
+
+# --------------------------------------------------------------------------- #
+# th-3 -- the `accepted` frame, reply_to and the Idempotency-Key               #
+# --------------------------------------------------------------------------- #
+_KEY = "retry-key-1"
+_ENDPOINT = "POST /conversations/{}/messages"
+_THREAD_BODY = {"text": "hello"}
+
+
+def _frames(sse_text: str) -> list[tuple[str, dict[str, object]]]:
+    """The (event, data) frames of an SSE body, keep-alive comments skipped."""
+    frames: list[tuple[str, dict[str, object]]] = []
+    for block in sse_text.split("\n\n"):
+        lines = [line for line in block.splitlines() if not line.startswith(":")]
+        if not lines:
+            continue
+        assert lines[0].startswith("event: "), block
+        frames.append((lines[0].removeprefix("event: "), json.loads(lines[1][len("data: ") :])))
+    return frames
+
+
+def _post(
+    client: TestClient,
+    conversation_id: str,
+    *,
+    key: str | None = None,
+    stream: bool = False,
+    content: dict[str, object] | None = None,
+    accept_sse: bool = False,
+) -> Any:
+    headers = _auth()
+    if key is not None:
+        headers["Idempotency-Key"] = key
+    if accept_sse:
+        headers["Accept"] = "text/event-stream"
+    return client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        headers=headers,
+        json={"content": content if content is not None else _THREAD_BODY, "stream": stream},
+    )
+
+
+def _data(client: TestClient, conversation_id: str) -> list[dict[str, Any]]:
+    page: dict[str, Any] = _messages(client, conversation_id, "?limit=100")
+    data: list[dict[str, Any]] = page["data"]
+    return data
+
+
+def _row_key(conversation_id: str, key: str = _KEY, workspace: str = _W1) -> tuple[str, str, str]:
+    return (workspace, _ENDPOINT.format(conversation_id), key)
+
+
+def _setup(
+    *, agent_key: str = "echo", stream_max_duration_s: float | None = None
+) -> tuple[TestClient, str, InMemoryIdempotencyStore, ConversationsStack]:
+    store = InMemoryIdempotencyStore()
+    app, stack = _make_app(stream_max_duration_s=stream_max_duration_s, store=store)
+    client = TestClient(app)
+    return client, _create(client, agent_key=agent_key), store, stack
+
+
+# -- the accepted frame -------------------------------------------------------
+def test_sse_starts_with_accepted_naming_the_stored_user_message() -> None:
+    client, conversation_id, _store, _ = _setup()
+
+    response = _post(client, conversation_id, stream=True)
+
+    frames = _frames(response.text)
+    assert [name for name, _ in frames] == ["accepted", "token", "final"]
+    accepted = frames[0][1]
+    user = _data(client, conversation_id)[0]
+    assert user["role"] == "user"
+    assert accepted == {"conversation_id": conversation_id, "user_message_id": user["id"], "seq": 1}
+    assert frames[-1][1]["user_message_id"] == user["id"]
+    assert user["seq"] == accepted["seq"]
+
+
+@pytest.mark.parametrize(
+    ("setup", "expected"),
+    [("unknown", 404), ("invalid", 422)],
+)
+def test_a_refused_request_is_a_problem_with_no_accepted_frame_and_no_user_message(
+    setup: str, expected: int
+) -> None:
+    client, conversation_id, _store, stack = _setup()
+    target = "no-such-thread" if setup == "unknown" else conversation_id
+    body: dict[str, Any] = {"stream": True} if setup == "invalid" else {"content": {"text": "x"}}
+
+    response = client.post(
+        f"/api/v1/conversations/{target}/messages",
+        headers={**_auth(), "Accept": "text/event-stream"},
+        json={"stream": True, **body} if setup == "invalid" else {**body, "stream": True},
+    )
+
+    assert response.status_code == expected
+    assert response.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)
+    assert "event: accepted" not in response.text
+    assert stack.repository.messages.get(conversation_id, []) == []
+
+
+def test_a_quota_refusal_is_a_429_with_no_accepted_frame_and_no_user_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, conversation_id, _store, stack = _setup()
+
+    async def _refuse(*_args: object, **_kwargs: object) -> None:
+        raise RateLimitedError("over the limit", retry_after_s=3)
+
+    monkeypatch.setattr(AgentOrchestrator, "_admit", _refuse)
+
+    response = _post(client, conversation_id, stream=True)
+
+    assert response.status_code == 429
+    assert "event: accepted" not in response.text
+    assert stack.repository.messages.get(conversation_id, []) == []
+
+
+# -- reply_to -----------------------------------------------------------------
+def test_the_reply_records_the_question_it_answers_in_json_and_history() -> None:
+    client, conversation_id, _store, _ = _setup()
+
+    reply = _post(client, conversation_id).json()
+
+    history = _data(client, conversation_id)
+    user, assistant = history
+    assert user["reply_to"] is None
+    assert "reply_to" in user  # always on the wire
+    assert reply["reply_to"] == user["id"]
+    assert assistant["reply_to"] == user["id"]
+
+
+def test_a_client_sent_reply_to_is_ignored() -> None:
+    client, conversation_id, _store, _ = _setup()
+    forged = "0190eeee-0000-7000-8000-0000000000a1"
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        headers=_auth(),
+        json={"content": {"text": "hi", "reply_to": forged}, "reply_to": forged},
+    )
+
+    assert response.status_code == 200
+    user, assistant = _data(client, conversation_id)
+    assert user["reply_to"] is None
+    assert assistant["reply_to"] == user["id"]
+    assert forged not in json.dumps(user)
+
+
+def test_deleting_the_question_keeps_the_id_on_the_answer() -> None:
+    client, conversation_id, _store, _ = _setup()
+    reply = _post(client, conversation_id).json()
+    question_id = reply["reply_to"]
+
+    gone = client.delete(
+        f"/api/v1/conversations/{conversation_id}/messages/{question_id}", headers=_auth()
+    )
+
+    assert gone.status_code == 204
+    history = _data(client, conversation_id)
+    assert [m["role"] for m in history] == ["assistant"]
+    assert history[0]["reply_to"] == question_id
+
+
+# -- no key: nothing changes --------------------------------------------------
+@pytest.mark.parametrize("stream", [False, True])
+def test_without_a_key_the_key_store_is_never_touched(stream: bool) -> None:
+    client, conversation_id, store, _ = _setup()
+
+    response = _post(client, conversation_id, stream=stream)
+
+    assert response.status_code == 200
+    assert store.calls == []
+    if stream:
+        accepted = _frames(response.text)[0]
+        assert accepted[0] == "accepted"
+        assert "replayed" not in accepted[1]
+
+
+# -- a key: replay of a completed turn ---------------------------------------
+def test_a_repeat_returns_the_same_message_and_runs_nothing() -> None:
+    client, conversation_id, store, _ = _setup()
+    first = _post(client, conversation_id, key=_KEY)
+    runs_after_first = len(_RUNS)
+
+    second = _post(client, conversation_id, key=_KEY)
+
+    assert first.status_code == second.status_code == 200
+    assert second.json() == first.json()
+    assert len(_RUNS) == runs_after_first == 1
+    assert len(_data(client, conversation_id)) == 2  # one question, one answer
+    assert store.calls == ["claim", "checkpoint", "complete", "claim"]
+
+
+def test_the_same_key_with_other_content_is_a_conflict_and_runs_nothing() -> None:
+    client, conversation_id, store, _ = _setup()
+    _post(client, conversation_id, key=_KEY)
+
+    response = _post(client, conversation_id, key=_KEY, content={"text": "something else"})
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "common.conflict"
+    assert response.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)
+    assert len(_RUNS) == 1
+    assert len(_data(client, conversation_id)) == 2
+    assert _KEY not in response.text  # the key is never echoed (d-t13)
+    assert store.calls[-1] == "claim"
+
+
+def test_two_keys_with_the_same_text_are_two_turns() -> None:
+    client, conversation_id, _store, _ = _setup()
+
+    first = _post(client, conversation_id, key="k-1").json()
+    second = _post(client, conversation_id, key="k-2").json()
+
+    assert first["id"] != second["id"]
+    assert len(_RUNS) == 2
+    assert len(_data(client, conversation_id)) == 4
+
+
+def test_the_same_key_on_another_conversation_is_a_new_turn() -> None:
+    client, first_id, store, _ = _setup()
+    second_id = _create(client)
+    _post(client, first_id, key=_KEY)
+
+    _post(client, second_id, key=_KEY)
+
+    assert len(_RUNS) == 2
+    assert _row_key(first_id) in store.rows
+    assert _row_key(second_id) in store.rows
+
+
+def test_the_scope_uses_the_canonical_conversation_id_not_the_path_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, conversation_id, store, stack = _setup()
+    original_get = stack.repository.get
+
+    async def _case_insensitive_get(ctx: ExecutionContext, requested: str) -> Any:
+        # what Postgres' uuid type does: two spellings of one id are one row
+        return await original_get(ctx, requested.lower())
+
+    monkeypatch.setattr(stack.repository, "get", _case_insensitive_get)
+    spelled_differently = conversation_id.upper()
+    assert spelled_differently != conversation_id
+
+    first = _post(client, conversation_id, key=_KEY)
+    repeat = _post(client, spelled_differently, key=_KEY)
+
+    assert first.status_code == repeat.status_code == 200
+    assert repeat.json() == first.json()  # a replay, not a second turn
+    assert len(_RUNS) == 1
+    assert list(store.rows) == [_row_key(conversation_id)]  # one row, canonical id
+
+
+@pytest.mark.parametrize("key", ["", "   ", "x" * 256])
+def test_an_unusable_key_is_a_422_before_any_read_or_run(key: str) -> None:
+    client, conversation_id, store, stack = _setup()
+
+    response = _post(client, conversation_id, key=key)
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "common.validation_error"
+    assert store.calls == []
+    assert _RUNS == []
+    assert stack.repository.messages.get(conversation_id, []) == []
+
+
+def test_a_stream_then_a_json_repeat_returns_the_message_not_a_conflict() -> None:
+    client, conversation_id, _store, _ = _setup()
+    streamed = _post(client, conversation_id, key=_KEY, stream=True)
+    final = _frames(streamed.text)[-1][1]
+
+    repeat = _post(client, conversation_id, key=_KEY)
+
+    assert repeat.status_code == 200
+    assert repeat.json()["id"] == final["message_id"]
+    assert repeat.json()["content"] == final["content"]
+    assert len(_RUNS) == 1
+
+
+def test_a_json_then_a_stream_repeat_replays_two_frames() -> None:
+    client, conversation_id, _store, _ = _setup()
+    first = _post(client, conversation_id, key=_KEY).json()
+
+    repeat = _post(client, conversation_id, key=_KEY, stream=True)
+
+    frames = _frames(repeat.text)
+    assert [name for name, _ in frames] == ["accepted", "final"]
+    assert frames[0][1]["replayed"] is True
+    assert frames[0][1]["user_message_id"] == first["reply_to"]
+    assert frames[1][1]["message_id"] == first["id"]
+    assert len(_RUNS) == 1
+
+
+def test_a_streamed_repeat_replays_the_original_frames_without_tokens_or_calls() -> None:
+    client, conversation_id, store, _ = _setup()
+    first = _frames(_post(client, conversation_id, key=_KEY, stream=True).text)
+    assert store.calls == ["claim", "checkpoint", "complete"]
+
+    repeat = _frames(_post(client, conversation_id, key=_KEY, stream=True).text)
+
+    assert [name for name, _ in repeat] == ["accepted", "final"]
+    original_accepted, original_final = first[0][1], first[-1][1]
+    assert repeat[0][1] == {**original_accepted, "replayed": True}
+    for field in ("message_id", "content", "user_message_id", "usage"):
+        assert repeat[1][1][field] == original_final[field]
+    assert store.calls == ["claim", "checkpoint", "complete", "claim"]
+    assert len(_RUNS) == 1
+
+
+def test_a_replayed_final_carries_the_stored_citations(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_CitingAgent, "citations", _TWO_CITATIONS)
+    client, conversation_id, _store, _ = _setup(agent_key="citing")
+    first = _frames(_post(client, conversation_id, key=_KEY, stream=True).text)[-1][1]
+
+    repeat = _frames(_post(client, conversation_id, key=_KEY, stream=True).text)[-1][1]
+
+    assert repeat["citations"] == first["citations"] == _TWO_CITATIONS
+
+
+def test_a_replay_after_the_answer_was_deleted_is_a_404_in_both_shapes() -> None:
+    client, conversation_id, store, _ = _setup()
+    reply = _post(client, conversation_id, key=_KEY).json()
+    client.delete(
+        f"/api/v1/conversations/{conversation_id}/messages/{reply['id']}", headers=_auth()
+    )
+    calls = list(store.calls)
+
+    json_repeat = _post(client, conversation_id, key=_KEY)
+    sse_repeat = _post(client, conversation_id, key=_KEY, stream=True)
+
+    for response in (json_repeat, sse_repeat):
+        assert response.status_code == 404
+        assert response.json()["code"] == "common.not_found"
+        assert response.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)
+        assert "echo: hello" not in response.text
+        assert "event: accepted" not in response.text
+    assert len(_RUNS) == 1
+    assert store.calls[len(calls) :] == ["claim", "claim"]
+
+
+def test_a_replay_after_the_conversation_was_deleted_is_a_404_and_touches_nothing() -> None:
+    client, conversation_id, store, _ = _setup()
+    _post(client, conversation_id, key=_KEY)
+    client.delete(f"/api/v1/conversations/{conversation_id}", headers=_auth())
+    calls = list(store.calls)
+
+    response = _post(client, conversation_id, key=_KEY)
+
+    assert response.status_code == 404
+    assert store.calls == calls
+    assert len(_RUNS) == 1
+
+
+def test_a_swept_key_starts_a_new_turn() -> None:
+    client, conversation_id, store, _ = _setup()
+    _post(client, conversation_id, key=_KEY)
+    del store.rows[_row_key(conversation_id)]  # the daily retention sweep
+
+    _post(client, conversation_id, key=_KEY)
+
+    assert len(_RUNS) == 2
+    assert len(_data(client, conversation_id)) == 4
+
+
+def test_arabic_and_very_long_content_replay_byte_for_byte() -> None:
+    client, conversation_id, store, _ = _setup()
+    arabic = {"text": "ما هو دليل الصيانة؟ 🙂 " + "ـ" * 10}
+    long_text = {"text": "س" * 100_000}
+    for key, content in (("k-ar", arabic), ("k-long", long_text)):
+        first = _post(client, conversation_id, key=key, content=content)
+        second = _post(client, conversation_id, key=key, content=content)
+        assert second.content == first.content
+        assert second.json()["content"]["text"] == f"echo: {content['text']}"
+    bodies = [json.dumps(row.response_body, ensure_ascii=False) for row in store.rows.values()]
+    assert all(len(body) < 512 for body in bodies)  # a handle, not the text
+    assert all("echo" not in body and "س" not in body for body in bodies)
+
+
+def test_the_stored_handle_carries_ids_and_counts_only_after_every_path() -> None:
+    forbidden = ("text", "content", "citations", "detail", "echo", "hello")
+    for agent_key in ("echo", "half"):
+        client, conversation_id, store, _ = _setup(agent_key=agent_key)
+        _post(client, conversation_id, key="k-json")
+        _post(client, conversation_id, key="k-sse", stream=True)
+        for row in store.rows.values():
+            body = json.dumps(row.response_body)
+            assert row.response_body is not None
+            assert row.response_body["kind"] == "agent_turn"
+            assert not any(word in set(row.response_body) for word in forbidden)
+            assert "echo:" not in body and "the provider" not in body
+
+
+# -- failures -----------------------------------------------------------------
+def test_a_failure_after_the_question_is_stored_replays_the_same_problem_with_its_ids() -> None:
+    client, conversation_id, store, _ = _setup(agent_key="half")
+
+    first = _post(client, conversation_id, key=_KEY)
+    runs = len(_RUNS)
+    second = _post(client, conversation_id, key=_KEY)
+
+    history = _data(client, conversation_id)
+    user = history[0]
+    partial = history[1]
+    # `_HalfAgent` raises a ConflictError, so B1's own code and status are 409:
+    # the replay must hand back exactly what the first caller got, whatever it was.
+    assert first.status_code == 409
+    assert first.json()["code"] == "common.conflict"
+    assert first.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)
+    assert first.json()["user_message_id"] == user["id"]
+    assert first.json()["message_id"] == partial["id"]
+    assert partial["status"] == "partial"
+    assert second.status_code == first.status_code
+    for member in ("code", "status", "user_message_id", "message_id", "title"):
+        assert second.json()[member] == first.json()[member]
+    assert len(_RUNS) == runs == 1
+    assert store.calls == ["claim", "checkpoint", "complete", "claim"]
+
+
+def test_a_streamed_failure_replays_accepted_then_the_same_error() -> None:
+    client, conversation_id, _store, _ = _setup(agent_key="half")
+    first = _frames(_post(client, conversation_id, key=_KEY, stream=True).text)
+    assert [name for name, _ in first] == ["accepted", "token", "error"]
+    assert "message_id" in first[-1][1]
+
+    repeat = _frames(_post(client, conversation_id, key=_KEY, stream=True).text)
+
+    assert [name for name, _ in repeat] == ["accepted", "error"]
+    assert repeat[0][1]["replayed"] is True
+    for member in ("code", "status", "user_message_id", "message_id"):
+        assert repeat[1][1][member] == first[-1][1][member]
+    assert len(_RUNS) == 1
+
+
+def test_a_failure_before_any_token_has_the_question_id_and_no_message_id() -> None:
+    client, conversation_id, _store, _ = _setup(agent_key="halt")
+    registry_app = client.app
+    assert registry_app is not None
+
+    # `half` streams one token first; this one fails at once.
+    class _Halt(BaseAgent):
+        metadata = AgentMetadata(
+            key="halt",
+            name="Halt",
+            version="1.0.0",
+            description="fails at once",
+            capabilities=frozenset(),
+            required_permissions=frozenset({"agents:invoke"}),
+        )
+
+        async def initialize(self) -> None:
+            return None
+
+        async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+            _RUNS.append("halt")
+            raise ConflictError("down before the first token")
+            yield  # pragma: no cover
+
+    client.app.state.test_orchestrator._deps.agents.register(_Halt.metadata, _Halt)  # type: ignore[attr-defined]
+
+    first = _frames(_post(client, conversation_id, key=_KEY, stream=True).text)
+
+    assert [name for name, _ in first] == ["accepted", "error"]
+    assert "message_id" not in first[-1][1]
+    repeat = _frames(_post(client, conversation_id, key=_KEY, stream=True).text)
+    assert [name for name, _ in repeat] == ["accepted", "error"]
+    assert repeat[1][1]["code"] == first[-1][1]["code"]
+    assert "message_id" not in repeat[1][1]
+    assert [m["role"] for m in _data(client, conversation_id)] == ["user"]
+    assert len(_RUNS) == 1
+
+
+def test_a_reply_that_could_not_be_saved_is_a_502_with_the_question_id_not_a_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, conversation_id, _store, stack = _setup()
+    original = stack.repository.append_message
+
+    async def _fail_for_assistant(ctx: ExecutionContext, message: Any) -> None:
+        if message.role.value == "assistant":
+            raise ConflictError("the write lost a race")
+        await original(ctx, message)
+
+    monkeypatch.setattr(stack.repository, "append_message", _fail_for_assistant)
+
+    first = _post(client, conversation_id, key=_KEY)
+    second = _post(client, conversation_id, key=_KEY)
+
+    user = stack.repository.messages[conversation_id][0]
+    assert first.status_code == 502
+    assert first.json()["code"] == "agent.failed"
+    assert first.json()["user_message_id"] == user.id
+    assert "message_id" not in first.json()
+    assert second.status_code == 502
+    assert second.json()["user_message_id"] == user.id
+    assert len(_RUNS) == 1
+
+
+def test_a_failure_leaves_no_assistant_message_that_is_not_complete_or_partial() -> None:
+    client, conversation_id, _store, _ = _setup(agent_key="half")
+    _post(client, conversation_id, key=_KEY)
+    _post(client, conversation_id, key=_KEY, stream=True)
+
+    statuses = [m["status"] for m in _data(client, conversation_id) if m["role"] == "assistant"]
+
+    assert statuses == ["partial"]
+    assert all(status in {"complete", "partial", None} for status in statuses)
+
+
+def test_a_failure_without_a_key_touches_no_store_and_leaves_the_question() -> None:
+    client, conversation_id, store, _ = _setup(agent_key="half")
+
+    response = _post(client, conversation_id)
+
+    assert response.status_code == 409
+    assert store.calls == []
+    assert _data(client, conversation_id)[0]["role"] == "user"
+
+
+def test_a_failure_before_the_question_is_stored_frees_the_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, conversation_id, store, _ = _setup()
+    real_admit = AgentOrchestrator._admit
+    attempts: list[int] = []
+
+    async def _refuse_once(self: AgentOrchestrator, *args: Any, **kwargs: Any) -> Any:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RateLimitedError("over the limit", retry_after_s=1)
+        return await real_admit(self, *args, **kwargs)
+
+    monkeypatch.setattr(AgentOrchestrator, "_admit", _refuse_once)
+
+    refused = _post(client, conversation_id, key=_KEY)
+    assert refused.status_code == 429
+    assert store.calls == ["claim", "release"]
+    assert store.rows == {}
+
+    retried = _post(client, conversation_id, key=_KEY)
+
+    assert retried.status_code == 200
+    assert len(_RUNS) == 1
+    assert [m["role"] for m in _data(client, conversation_id)] == ["user", "assistant"]
+
+
+def test_an_unknown_agent_frees_the_key_too() -> None:
+    client, conversation_id, store, _ = _setup(agent_key="ghost")
+
+    response = _post(client, conversation_id, key=_KEY)
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "agent.unknown"
+    assert store.calls == ["claim", "release"]
+    assert store.rows == {}
+
+
+# -- an attempt that is still running, or whose server died -------------------
+def _accepted_handle(conversation_id: str, user_message_id: str, seq: int = 1) -> dict[str, Any]:
+    return TurnHandle(
+        conversation_id=conversation_id,
+        user_message_id=user_message_id,
+        seq=seq,
+        outcome="accepted",
+    ).to_json()
+
+
+async def _forge_claim(
+    store: InMemoryIdempotencyStore,
+    conversation_id: str,
+    *,
+    handle: dict[str, Any] | None,
+    age_s: float,
+    content: dict[str, object] | None = None,
+) -> None:
+    ctx = _scope_ctx()
+    endpoint = _ENDPOINT.format(conversation_id)
+    await store.claim(
+        ctx,
+        endpoint=endpoint,
+        key=_KEY,
+        request_hash=content_hash(content if content is not None else _THREAD_BODY),
+    )
+    if handle is not None:
+        await store.checkpoint(ctx, endpoint=endpoint, key=_KEY, response_body=handle)
+    store.set_age(_row_key(conversation_id), age_s)
+
+
+async def test_a_young_unfinished_claim_is_a_409_problem_not_a_stream() -> None:
+    client, conversation_id, store, _ = _setup()
+    await _forge_claim(
+        store, conversation_id, handle=_accepted_handle(conversation_id, "u-1"), age_s=10
+    )
+
+    for stream in (False, True):
+        response = _post(client, conversation_id, key=_KEY, stream=stream)
+        assert response.status_code == 409
+        assert response.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)
+        assert response.json()["code"] == "common.conflict"
+    assert _RUNS == []
+
+
+async def test_an_old_accepted_claim_is_reported_lost_with_the_question_id() -> None:
+    client, conversation_id, store, _ = _setup()
+    t = Settings().limits.stream_max_duration_s + 120
+    await _forge_claim(
+        store, conversation_id, handle=_accepted_handle(conversation_id, "u-1", 4), age_s=t
+    )
+
+    as_json = _post(client, conversation_id, key=_KEY)
+    as_sse = _frames(_post(client, conversation_id, key=_KEY, stream=True).text)
+
+    assert as_json.status_code == 502
+    assert as_json.json()["code"] == "agent.failed"
+    assert as_json.json()["user_message_id"] == "u-1"
+    assert "message_id" not in as_json.json()
+    assert [name for name, _ in as_sse] == ["accepted", "error"]
+    assert as_sse[0][1] == {
+        "conversation_id": conversation_id,
+        "user_message_id": "u-1",
+        "seq": 4,
+        "replayed": True,
+    }
+    assert as_sse[1][1]["code"] == "agent.failed"
+    assert _RUNS == []
+    # a repeat writes nothing: only the claims
+    assert store.calls == ["claim", "checkpoint", "claim", "claim"]
+
+
+async def test_one_second_before_the_threshold_it_is_still_a_409() -> None:
+    client, conversation_id, store, _ = _setup()
+    t = Settings().limits.stream_max_duration_s + 120
+    await _forge_claim(
+        store, conversation_id, handle=_accepted_handle(conversation_id, "u-1"), age_s=t - 1
+    )
+
+    assert _post(client, conversation_id, key=_KEY).status_code == 409
+
+
+async def test_an_old_claim_with_no_recorded_question_is_a_502_without_ids_or_stream() -> None:
+    client, conversation_id, store, _ = _setup()
+    t = Settings().limits.stream_max_duration_s + 120
+    await _forge_claim(store, conversation_id, handle=None, age_s=t)
+
+    response = _post(client, conversation_id, key=_KEY, stream=True)
+
+    assert response.status_code == 502
+    assert response.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)
+    assert response.json()["code"] == "agent.failed"
+    assert "user_message_id" not in response.json()
+    assert "event: accepted" not in response.text
+
+
+async def test_a_running_turn_makes_the_repeat_a_409_and_the_first_still_completes() -> None:
+    store = InMemoryIdempotencyStore()
+    gate = asyncio.Event()
+
+    class _Gated(BaseAgent):
+        metadata = AgentMetadata(
+            key="gated",
+            name="Gated",
+            version="1.0.0",
+            description="waits for the test",
+            capabilities=frozenset(),
+            required_permissions=frozenset({"agents:invoke"}),
+        )
+
+        async def initialize(self) -> None:
+            return None
+
+        async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+            _RUNS.append("gated")
+            await gate.wait()
+            yield AgentEvent(type="final", data={"text": "done"})
+
+    app, _stack = _make_app(store=store)
+    app.state.test_orchestrator._deps.agents.register(_Gated.metadata, _Gated)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        created = await client.post(
+            "/api/v1/conversations",
+            headers=_auth(),
+            json={"space_id": _SPACE, "agent_key": "gated", "title": None},
+        )
+        conversation_id = created.json()["id"]
+        url = f"/api/v1/conversations/{conversation_id}/messages"
+        headers = {**_auth(), "Idempotency-Key": _KEY}
+
+        first = asyncio.create_task(client.post(url, headers=headers, json={"content": {"t": 1}}))
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if _row_key(conversation_id) in store.rows and (
+                store.rows[_row_key(conversation_id)].response_body is not None
+            ):
+                break
+        second = await client.post(url, headers=headers, json={"content": {"t": 1}})
+        gate.set()
+        done = await first
+
+    assert second.status_code == 409
+    assert done.status_code == 200
+    assert _RUNS == ["gated"]
+
+
+async def test_an_abandoned_stream_is_replayed_as_agent_failed_with_the_question_id() -> None:
+    """AC-4.3/4.4: the reader left after a token / right after `accepted`; the
+    ledger was still settled, and the repeat says so without running anything."""
+    client, conversation_id, store, _ = _setup(agent_key="slow")
+    orchestrator = client.app.state.test_orchestrator  # type: ignore[attr-defined]
+    ctx = _scope_ctx()
+    ledger = await claim_turn(
+        store,
+        ctx,
+        conversation_id=conversation_id,
+        key=_KEY,
+        content=_THREAD_BODY,
+        stale_after_s=stale_after_s(Settings()),
+    )
+    assert isinstance(ledger, IdempotentTurnLedger)
+    stream = await orchestrator.invoke(
+        ctx,
+        "slow",
+        AgentRequest(conversation_id=conversation_id, input=_THREAD_BODY),
+        ledger=ledger,
+    )
+    accepted = await stream.__anext__()
+    await stream.__anext__()  # the first token
+    await stream.aclose()  # the reader left
+
+    repeat = _frames(_post(client, conversation_id, key=_KEY, stream=True).text)
+
+    assert [name for name, _ in repeat] == ["accepted", "error"]
+    assert repeat[0][1]["user_message_id"] == accepted.data["user_message_id"]
+    assert repeat[1][1]["code"] == "agent.failed"
+    assert repeat[1][1]["message_id"]  # the partial that was saved
+    assert len(_RUNS) == 0  # `_SlowAgent` is not counted; nothing else ran
+
+
+# -- tenancy, authorisation, authentication -----------------------------------
+def test_another_workspace_cannot_reach_or_replay_the_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, conversation_id, store, _ = _setup()
+    _post(client, conversation_id, key=_KEY)
+    calls = list(store.calls)
+
+    async def _as_workspace_b(self: _FakeAuth, token: str) -> Principal:
+        return Principal(
+            workspace_id="018f0000-0000-7000-8000-0000000000w2",
+            user_id="018f0000-0000-7000-8000-0000000000u2",
+            roles=frozenset({"owner"}),
+        )
+
+    monkeypatch.setattr(_FakeAuth, "authenticate", _as_workspace_b)
+
+    response = _post(client, conversation_id, key=_KEY)
+
+    assert response.status_code == 404
+    assert store.calls == calls  # the key store was not touched
+    assert len(_RUNS) == 1
+
+
+def test_a_viewer_is_refused_and_no_row_is_created(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, conversation_id, store, _ = _setup()
+
+    async def _as_viewer(self: _FakeAuth, token: str) -> Principal:
+        return Principal(workspace_id=_W1, user_id=_U1, roles=frozenset({"viewer"}))
+
+    monkeypatch.setattr(_FakeAuth, "authenticate", _as_viewer)
+
+    response = _post(client, conversation_id, key=_KEY)
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "authz.forbidden"
+    assert store.rows == {}
+    assert store.calls == []
+
+
+def test_a_second_user_of_the_same_workspace_replays_the_first_users_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The documented scope (th-3 q-12): the key does not separate users."""
+    client, conversation_id, _store, _ = _setup()
+    first = _post(client, conversation_id, key=_KEY).json()
+
+    async def _as_other_user(self: _FakeAuth, token: str) -> Principal:
+        return Principal(
+            workspace_id=_W1,
+            user_id="018f0000-0000-7000-8000-0000000000u2",
+            roles=frozenset({"owner"}),
+        )
+
+    monkeypatch.setattr(_FakeAuth, "authenticate", _as_other_user)
+
+    second = _post(client, conversation_id, key=_KEY)
+
+    assert second.status_code == 200
+    assert second.json() == first
+    assert len(_RUNS) == 1
+
+
+@pytest.mark.parametrize("token", ["", "bad"])
+def test_no_or_a_bad_token_is_401_and_the_store_is_untouched(token: str) -> None:
+    client, conversation_id, store, _ = _setup()
+    headers = {"Idempotency-Key": _KEY}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        headers=headers,
+        json={"content": _THREAD_BODY},
+    )
+
+    assert response.status_code == 401
+    assert store.calls == []
+
+
+def test_the_new_log_lines_carry_neither_the_key_nor_the_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("DEBUG")
+    client, conversation_id, _store, _ = _setup(agent_key="half")
+    secret_key = "super-secret-retry-key"
+
+    _post(client, conversation_id, key=secret_key, content={"text": "my private question"})
+    _post(client, conversation_id, key=secret_key, content={"text": "my private question"})
+
+    assert secret_key not in caplog.text
+    assert "my private question" not in caplog.text
+
+
+def test_a_lone_surrogate_in_content_is_a_422_not_a_500() -> None:
+    """SR-6: valid JSON, not valid text -- refused before any claim or run."""
+    client, conversation_id, store, stack = _setup()
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        headers={**_auth(), "Idempotency-Key": _KEY, "Content-Type": "application/json"},
+        content=b'{"content": {"text": "\\ud800"}}',
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "common.validation_error"
+    assert store.rows == {}
+    assert _RUNS == []
+    assert stack.repository.messages.get(conversation_id, []) == []

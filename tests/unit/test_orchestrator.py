@@ -25,8 +25,11 @@ from app.agents.orchestrator import (
     _CUT_ABANDONED,
     _CUT_ERROR,
     _CUT_TIMEOUT,
+    AcceptedTurn,
     AgentOrchestrator,
     OrchestratorDependencies,
+    TurnLedger,
+    TurnOutcome,
     _Fallback,
     _stored_fallback,
     _TokenMeter,
@@ -561,7 +564,7 @@ async def test_orchestrator_drives_the_real_rag_agent_from_the_real_plugin_tree(
     # agent: the answer's space and the corpus header's are the same one.
     assert knowledge.spaces == [_SPACE, _SPACE]
     # Token stream, then one final carrying the assembled answer + citations.
-    assert [e.type for e in events] == ["token", "token", "final"]
+    assert [e.type for e in events] == ["accepted", "token", "token", "final"]
     assert events[-1].data["text"] == "Paris it is"
     # Retrieval plan §3.2/§4 row 3, P-32 — a structured citation, not a bare
     # `chunk_id` UUID, carrying ب-12's `rank` through the real plugin tree.
@@ -1214,6 +1217,9 @@ class _FakeThreads:
         # lists of their own so `appended`'s tuple keeps its shape.
         self.statuses: list[str | None] = []
         self.fallbacks: list[FallbackRef | None] = []
+        # th-3 -- `reply_to` of each `append`, in call order, in a list of its
+        # own so `appended`'s tuple keeps its shape.
+        self.reply_tos: list[str | None] = []
         # True = behave like the module that DROPPED the fallback it was sent.
         self._drop_fallback = drop_fallback
         self.route_reads: list[str] = []
@@ -1305,6 +1311,7 @@ class _FakeThreads:
         citations: tuple[CitationRef, ...] | None = None,
         status: str | None = None,
         fallback: FallbackRef | None = None,
+        reply_to: str | None = None,
     ) -> AppendedMessage:
         if self._known is not None and conversation_id != self._known:
             raise NotFoundError("conversation not found")
@@ -1314,6 +1321,7 @@ class _FakeThreads:
         self.citations.append(citations)
         self.statuses.append(status)
         self.fallbacks.append(fallback)
+        self.reply_tos.append(reply_to)
         self._seq += 1
         return AppendedMessage(
             id=f"msg-{self._seq}",
@@ -1327,6 +1335,7 @@ class _FakeThreads:
             citations=None if self._drop_citations else citations,
             status=status,
             fallback=None if self._drop_fallback else fallback,
+            reply_to=reply_to,
         )
 
 
@@ -1627,7 +1636,8 @@ async def test_a_failed_reply_write_never_breaks_a_produced_answer() -> None:
     ]
 
     assert events[-1].type == "final"
-    assert events[-1].data == {"text": "done", "file_id": "f-1"}  # un-enriched
+    # un-enriched (th-3: apart from the question's id, which is the turn's, not the reply's)
+    assert events[-1].data == {"text": "done", "file_id": "f-1", "user_message_id": "msg-1"}
 
 
 async def test_the_turn_reports_the_prompt_completion_split() -> None:
@@ -2431,7 +2441,7 @@ async def test_a_timed_out_stream_persists_what_it_streamed() -> None:
 
     events = await _drive(_cut_orchestrator(_CutOffAgent, threads), "cutoff")
 
-    assert [e.type for e in events] == ["token", "token", "error"]
+    assert [e.type for e in events] == ["accepted", "token", "token", "error"]
     (kept,) = _assistant_messages(threads)
     assert kept.startswith("Paris is the capital")
 
@@ -2470,7 +2480,7 @@ async def test_a_failing_stream_persists_what_it_streamed() -> None:
 
     events = await _drive(_cut_orchestrator(_HalfAnswerThenFailAgent, threads), "half-boom")
 
-    assert [e.type for e in events] == ["token", "error"]
+    assert [e.type for e in events] == ["accepted", "token", "error"]
     (kept,) = _assistant_messages(threads)
     assert kept.startswith("half an answer")
     assert _ENGLISH_MARKER in kept
@@ -2487,6 +2497,7 @@ async def test_an_abandoned_stream_keeps_what_it_streamed() -> None:
     stream = await orchestrator.invoke(
         _ctx(), "cutoff", AgentRequest(conversation_id="conv-1", input={"text": "hi"})
     )
+    assert (await stream.__anext__()).type == "accepted"
     assert (await stream.__anext__()).type == "token"
     await stream.aclose()
 
@@ -2526,7 +2537,7 @@ async def test_a_completed_stream_persists_no_trailing_marker() -> None:
 
     events = await _drive(_cut_orchestrator(_RecordingAgent, threads, cap_s=30.0), "recording")
 
-    assert [e.type for e in events] == ["final"]
+    assert [e.type for e in events] == ["accepted", "final"]
     (kept,) = _assistant_messages(threads)
     assert _ENGLISH_MARKER not in kept
     assert _ARABIC_MARKER not in kept
@@ -2636,7 +2647,7 @@ async def test_a_failed_partial_write_never_masks_the_failure_that_caused_it(
 
     events = await _drive(_cut_orchestrator(_CutOffAgent, threads), "cutoff")
 
-    assert [e.type for e in events] == ["token", "token", "error"]
+    assert [e.type for e in events] == ["accepted", "token", "token", "error"]
     assert events[-1].data["code"] == "agent.failed"
     assert "orchestrator.partial_reply_persist_failed" in [r.message for r in caplog.records]
 
@@ -2680,7 +2691,8 @@ async def test_the_abandoned_save_is_labelled_as_the_one_that_is_not_promised(
     stream = await orchestrator.invoke(
         _ctx(), "cutoff", AgentRequest(conversation_id="conv-1", input={"text": "hi"})
     )
-    await stream.__anext__()
+    await stream.__anext__()  # accepted (th-3)
+    await stream.__anext__()  # the first token
     await stream.aclose()
 
     (record,) = [r for r in caplog.records if r.message == "orchestrator.partial_reply_persisted"]
@@ -2773,7 +2785,8 @@ async def test_an_abandoned_turn_forgets_it_too() -> None:
     stream = await orchestrator.invoke(
         _ctx(), "cutoff", AgentRequest(conversation_id="conv-1", input={"text": "hi"})
     )
-    await stream.__anext__()
+    await stream.__anext__()  # accepted (th-3)
+    await stream.__anext__()  # the first token
     await stream.aclose()
 
     (kept,) = _assistant_messages(threads)
@@ -2801,7 +2814,7 @@ async def test_a_failed_forget_never_masks_the_cut_that_caused_it() -> None:
 
     events = await _drive(_cut_orchestrator(_CutOffAgent, threads), "cutoff")
 
-    assert [e.type for e in events] == ["token", "token", "error"]
+    assert [e.type for e in events] == ["accepted", "token", "token", "error"]
     (kept,) = _assistant_messages(threads)
     assert _ENGLISH_MARKER in kept
 
@@ -3115,6 +3128,7 @@ async def test_an_abandoned_stream_is_stored_partial() -> None:
     stream = await orchestrator.invoke(
         _ctx(), "cutoff", AgentRequest(conversation_id="conv-1", input={"text": "hi"})
     )
+    assert (await stream.__anext__()).type == "accepted"
     assert (await stream.__anext__()).type == "token"
     await stream.aclose()
 
@@ -3169,7 +3183,13 @@ async def test_a_media_agents_queued_job_is_stored_complete_and_its_frame_keeps_
 async def test_the_final_frame_gains_no_status_key(monkeypatch: pytest.MonkeyPatch) -> None:
     events, _threads = await _cited_turn(monkeypatch, {})
 
-    assert set(events[-1].data) == {"text", "message_id", "content", "usage"}
+    assert set(events[-1].data) == {
+        "text",
+        "message_id",
+        "content",
+        "usage",
+        "user_message_id",
+    }
     assert "message_status" not in events[-1].data
 
 
@@ -3260,3 +3280,404 @@ def test_a_dropped_fallback_warns_once_without_naming_a_model(
     assert record.conversation_id == "conv-1"  # type: ignore[attr-defined]
     assert "gpt-4.1-mini" not in caplog.text
     assert "gemma3" not in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# th-3 -- the `accepted` frame, the reconciliation ids, reply_to, the ledger   #
+# --------------------------------------------------------------------------- #
+class _Ledger:
+    """A recording ``TurnLedger`` (``L`` in the test plan)."""
+
+    def __init__(self, *, raises: bool = False) -> None:
+        self.accepted_turns: list[AcceptedTurn] = []
+        self.settled_outcomes: list[TurnOutcome] = []
+        # Which of the two was called, in order -- `settled` must follow `accepted`
+        # and precede the terminal frame.
+        self.order: list[str] = []
+        self._raises = raises
+
+    async def accepted(self, turn: AcceptedTurn) -> None:
+        self.order.append("accepted")
+        self.accepted_turns.append(turn)
+        if self._raises:
+            raise RuntimeError("ledger store down")
+
+    async def settled(self, outcome: TurnOutcome) -> None:
+        self.order.append("settled")
+        self.settled_outcomes.append(outcome)
+        if self._raises:
+            raise RuntimeError("ledger store down")
+
+
+async def _drive_with(
+    orchestrator: AgentOrchestrator, key: str, ledger: TurnLedger | None = None
+) -> list[AgentEvent]:
+    return [
+        e
+        async for e in await orchestrator.invoke(
+            _ctx(),
+            key,
+            AgentRequest(conversation_id="conv-1", input={"text": "hi"}),
+            ledger=ledger,
+        )
+    ]
+
+
+async def test_accepted_is_the_first_frame_with_exactly_three_keys() -> None:
+    threads = _FakeThreads(known="conv-1")
+
+    events = await _drive_with(_turn_orchestrator(_RecordingAgent, threads), "recording")
+
+    assert events[0].type == "accepted"
+    assert events[0].data == {"conversation_id": "conv-1", "user_message_id": "msg-1", "seq": 1}
+    assert [e.type for e in events].count("accepted") == 1
+
+
+async def test_accepted_carries_no_part_of_the_text() -> None:
+    threads = _FakeThreads(known="conv-1")
+    text = "سؤال طويل جداً " * 200
+    stream = await _turn_orchestrator(_RecordingAgent, threads).invoke(
+        _ctx(), "recording", AgentRequest(conversation_id="conv-1", input={"text": text})
+    )
+
+    first = await stream.__anext__()
+    await stream.aclose()
+
+    assert set(first.data) == {"conversation_id", "user_message_id", "seq"}
+    assert "سؤال" not in json.dumps(first.data, ensure_ascii=False)
+
+
+async def test_final_carries_the_user_message_id_that_accepted_announced() -> None:
+    threads = _FakeThreads(known="conv-1")
+
+    events = await _drive_with(_turn_orchestrator(_RecordingAgent, threads), "recording")
+
+    assert events[-1].type == "final"
+    assert events[-1].data["user_message_id"] == events[0].data["user_message_id"]
+    assert events[-1].data["message_id"] == "msg-2"
+
+
+async def test_without_a_conversations_seam_there_is_no_accepted_and_no_id() -> None:
+    events = await _drive_with(_turn_orchestrator(_RecordingAgent, None), "recording")
+
+    assert [e.type for e in events] == ["final"]
+    assert "user_message_id" not in events[-1].data
+
+
+async def test_the_reply_is_stored_with_reply_to_the_user_message() -> None:
+    threads = _FakeThreads(known="conv-1")
+
+    await _drive_with(_turn_orchestrator(_RecordingAgent, threads), "recording")
+
+    assert threads.reply_tos == [None, "msg-1"]
+
+
+@pytest.mark.parametrize(
+    ("agent", "key", "cap_s"),
+    [(_CutOffAgent, "cutoff", 0.05), (_HalfAnswerThenFailAgent, "half-boom", 0.05)],
+)
+async def test_a_stored_partial_replies_to_the_user_message_too(
+    agent: type[BaseAgent], key: str, cap_s: float
+) -> None:
+    threads = _FakeThreads(known="conv-1")
+
+    await _drive_with(_cut_orchestrator(agent, threads, cap_s=cap_s), key)
+
+    assert threads.statuses == [None, "partial"]
+    assert threads.reply_tos == [None, "msg-1"]
+
+
+async def test_an_abandoned_partial_replies_to_the_user_message_too() -> None:
+    threads = _FakeThreads(known="conv-1")
+    stream = await _cut_orchestrator(_CutOffAgent, threads, cap_s=None).invoke(
+        _ctx(), "cutoff", AgentRequest(conversation_id="conv-1", input={"text": "hi"})
+    )
+    await stream.__anext__()  # accepted
+    await stream.__anext__()  # the first token
+    await stream.aclose()
+
+    assert threads.statuses == [None, "partial"]
+    assert threads.reply_tos == [None, "msg-1"]
+
+
+async def test_the_user_message_itself_records_no_reply_to() -> None:
+    threads = _FakeThreads(known="conv-1")
+
+    await _drive_with(_turn_orchestrator(_RecordingAgent, threads), "recording")
+
+    assert threads.reply_tos[0] is None
+
+
+async def test_two_concurrent_turns_with_the_same_text_each_reply_to_their_own_question() -> None:
+    """AC-2.4: the link is the turn's own record, not a lookup by text or seq."""
+    gates: dict[str, asyncio.Event] = {"a": asyncio.Event(), "b": asyncio.Event()}
+
+    class _GatedAgent(BaseAgent):
+        metadata = _metadata("gated", capabilities=frozenset())
+
+        async def initialize(self) -> None:
+            return None
+
+        async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+            await gates[str(req.input["turn"])].wait()
+            yield AgentEvent(type="final", data={"text": "same answer"})
+
+    threads = _FakeThreads(known="conv-1")
+    orchestrator = _turn_orchestrator(_GatedAgent, threads)
+
+    async def run(turn: str) -> list[AgentEvent]:
+        return [
+            e
+            async for e in await orchestrator.invoke(
+                _ctx(),
+                "gated",
+                AgentRequest(conversation_id="conv-1", input={"text": "same", "turn": turn}),
+            )
+        ]
+
+    first = asyncio.create_task(run("a"))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    second = asyncio.create_task(run("b"))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    # The second turn answers FIRST: appended order is u1, u2, a2, a1.
+    gates["b"].set()
+    await second
+    gates["a"].set()
+    await first
+
+    roles = [row[1] for row in threads.appended]
+    assert roles == ["user", "user", "assistant", "assistant"]
+    # msg-1 / msg-2 are the questions; msg-3 answered turn b, msg-4 turn a.
+    assert threads.reply_tos == [None, None, "msg-2", "msg-1"]
+
+
+async def test_an_in_flight_error_carries_the_user_message_id_and_the_partial_id() -> None:
+    threads = _FakeThreads(known="conv-1")
+
+    events = await _drive_with(_cut_orchestrator(_HalfAnswerThenFailAgent, threads), "half-boom")
+
+    error = events[-1]
+    assert error.type == "error"
+    assert error.data["code"] == "common.conflict"  # B1's own fields, untouched
+    assert error.data["user_message_id"] == "msg-1"
+    assert error.data["message_id"] == "msg-2"
+
+
+async def test_an_error_before_any_token_carries_no_message_id() -> None:
+    class _FailsAtOnce(BaseAgent):
+        metadata = _metadata("fails-at-once", capabilities=frozenset())
+
+        async def initialize(self) -> None:
+            return None
+
+        async def run(self, req: AgentRequest) -> AsyncIterator[AgentEvent]:
+            raise ConflictError("down")
+            yield  # pragma: no cover
+
+    threads = _FakeThreads(known="conv-1")
+
+    events = await _drive_with(_turn_orchestrator(_FailsAtOnce, threads), "fails-at-once")
+
+    assert events[-1].type == "error"
+    assert events[-1].data["user_message_id"] == "msg-1"
+    assert "message_id" not in events[-1].data
+
+
+async def test_a_timeout_error_carries_the_ids() -> None:
+    threads = _FakeThreads(known="conv-1")
+
+    events = await _drive_with(_cut_orchestrator(_CutOffAgent, threads), "cutoff")
+
+    assert events[-1].data["status"] == 502
+    assert events[-1].data["user_message_id"] == "msg-1"
+    assert events[-1].data["message_id"] == "msg-2"
+
+
+async def test_invoke_once_turns_the_ids_into_the_problem_extensions() -> None:
+    threads = _FakeThreads(known="conv-1")
+    orchestrator = _cut_orchestrator(_HalfAnswerThenFailAgent, threads)
+
+    with pytest.raises(AppError) as excinfo:
+        await orchestrator.invoke_once(
+            _ctx(), "half-boom", AgentRequest(conversation_id="conv-1", input={"text": "hi"})
+        )
+
+    assert dict(excinfo.value.extensions) == {"user_message_id": "msg-1", "message_id": "msg-2"}
+
+
+async def test_a_produced_reply_that_could_not_be_saved_is_a_502_with_the_question_id() -> None:
+    """AC-5.3 / d-t6: not `common.internal` ("persistence is not wired")."""
+    threads = _FakeThreads(known="conv-1", fail_on="assistant")
+    orchestrator = _turn_orchestrator(_RecordingAgent, threads)
+
+    with pytest.raises(AppError) as excinfo:
+        await orchestrator.invoke_once(
+            _ctx(), "recording", AgentRequest(conversation_id="conv-1", input={"text": "hi"})
+        )
+
+    assert excinfo.value.code == "agent.failed"
+    assert excinfo.value.status == 502
+    assert dict(excinfo.value.extensions) == {"user_message_id": "msg-1"}
+
+
+async def test_the_ledger_hears_accepted_then_replied_before_the_final_frame() -> None:
+    threads = _FakeThreads(known="conv-1")
+    ledger = _Ledger()
+    stream = await _turn_orchestrator(_RecordingAgent, threads).invoke(
+        _ctx(),
+        "recording",
+        AgentRequest(conversation_id="conv-1", input={"text": "hi"}),
+        ledger=ledger,
+    )
+
+    seen_at_final: list[str] = []
+    async for event in stream:
+        if event.type == "final":
+            seen_at_final = list(ledger.order)
+
+    assert seen_at_final == ["accepted", "settled"]  # settled BEFORE `final` left
+    (turn,) = ledger.accepted_turns
+    assert turn == AcceptedTurn(conversation_id="conv-1", user_message_id="msg-1", seq=1)
+    (outcome,) = ledger.settled_outcomes
+    assert outcome.replied is True
+    assert outcome.message_id == "msg-2"
+    assert outcome.code is None
+    assert outcome.prompt_tokens == 0
+    assert outcome.completion_tokens == 0
+
+
+async def test_the_ledger_is_told_accepted_before_the_first_frame_is_pulled() -> None:
+    threads = _FakeThreads(known="conv-1")
+    ledger = _Ledger()
+
+    stream = await _turn_orchestrator(_RecordingAgent, threads).invoke(
+        _ctx(),
+        "recording",
+        AgentRequest(conversation_id="conv-1", input={"text": "hi"}),
+        ledger=ledger,
+    )
+
+    assert ledger.order == ["accepted"]  # pre-flight, before any frame
+    await stream.aclose()
+
+
+async def test_an_agent_error_settles_failed_with_the_problem_the_caller_sees() -> None:
+    threads = _FakeThreads(known="conv-1")
+    ledger = _Ledger()
+
+    events = await _drive_with(
+        _cut_orchestrator(_HalfAnswerThenFailAgent, threads), "half-boom", ledger
+    )
+
+    (outcome,) = ledger.settled_outcomes
+    assert outcome.replied is False
+    assert outcome.message_id == "msg-2"  # the saved partial
+    assert outcome.code == events[-1].data["code"]
+    assert outcome.status == events[-1].data["status"]
+
+
+async def test_a_timeout_settles_agent_failed_502() -> None:
+    threads = _FakeThreads(known="conv-1")
+    ledger = _Ledger()
+
+    await _drive_with(_cut_orchestrator(_CutOffAgent, threads), "cutoff", ledger)
+
+    (outcome,) = ledger.settled_outcomes
+    assert (outcome.replied, outcome.code, outcome.status) == (False, "agent.failed", 502)
+    assert outcome.message_id == "msg-2"
+
+
+async def test_an_abandoned_turn_settles_with_the_partial_it_managed_to_save() -> None:
+    threads = _FakeThreads(known="conv-1")
+    ledger = _Ledger()
+    stream = await _cut_orchestrator(_CutOffAgent, threads, cap_s=None).invoke(
+        _ctx(),
+        "cutoff",
+        AgentRequest(conversation_id="conv-1", input={"text": "hi"}),
+        ledger=ledger,
+    )
+    await stream.__anext__()  # accepted
+    await stream.__anext__()  # a token
+    await stream.aclose()
+
+    (outcome,) = ledger.settled_outcomes
+    assert (outcome.replied, outcome.code, outcome.status) == (False, "agent.failed", 502)
+    assert outcome.message_id == "msg-2"
+
+
+async def test_abandoning_right_after_accepted_settles_with_no_message_id() -> None:
+    threads = _FakeThreads(known="conv-1")
+    ledger = _Ledger()
+    stream = await _cut_orchestrator(_CutOffAgent, threads, cap_s=None).invoke(
+        _ctx(),
+        "cutoff",
+        AgentRequest(conversation_id="conv-1", input={"text": "hi"}),
+        ledger=ledger,
+    )
+    assert (await stream.__anext__()).type == "accepted"
+    await stream.aclose()
+
+    (outcome,) = ledger.settled_outcomes
+    assert outcome.message_id is None
+    assert (outcome.replied, outcome.code) == (False, "agent.failed")
+    assert threads.statuses == [None]  # only the question was stored
+
+
+async def test_a_reply_that_failed_to_save_settles_agent_failed_without_message_id() -> None:
+    threads = _FakeThreads(known="conv-1", fail_on="assistant")
+    ledger = _Ledger()
+
+    events = await _drive_with(_turn_orchestrator(_RecordingAgent, threads), "recording", ledger)
+
+    assert events[-1].type == "final"
+    assert "message_id" not in events[-1].data
+    assert events[-1].data["user_message_id"] == "msg-1"
+    (outcome,) = ledger.settled_outcomes
+    assert (outcome.replied, outcome.code, outcome.status) == (False, "agent.failed", 502)
+    assert outcome.message_id is None
+
+
+async def test_a_ledger_that_raises_never_fails_the_turn_and_logs_no_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("WARNING", logger="app.agents.orchestrator")
+    threads = _FakeThreads(known="conv-1")
+
+    events = await _drive_with(
+        _turn_orchestrator(_RecordingAgent, threads), "recording", _Ledger(raises=True)
+    )
+
+    assert [e.type for e in events] == ["accepted", "final"]
+    records = [r for r in caplog.records if r.message == "orchestrator.turn_ledger_failed"]
+    assert [r.phase for r in records] == ["accepted", "settled"]  # type: ignore[attr-defined]
+    assert all(r.conversation_id == "conv-1" for r in records)  # type: ignore[attr-defined]
+    # SR-1: the exception TYPE only; a chain (`exc_info`) could carry bound parameters
+    assert all(r.exc_info is None for r in records)
+    assert all(r.error_type == "RuntimeError" for r in records)  # type: ignore[attr-defined]
+
+
+async def test_the_ledger_is_settled_at_most_once() -> None:
+    threads = _FakeThreads(known="conv-1")
+    ledger = _Ledger()
+    stream = await _turn_orchestrator(_RecordingAgent, threads).invoke(
+        _ctx(),
+        "recording",
+        AgentRequest(conversation_id="conv-1", input={"text": "hi"}),
+        ledger=ledger,
+    )
+    async for event in stream:
+        if event.type == "final":
+            break
+    await stream.aclose()  # a reader that leaves right after `final`
+
+    assert ledger.order == ["accepted", "settled"]
+
+
+async def test_no_ledger_without_a_conversations_seam() -> None:
+    ledger = _Ledger()
+
+    await _drive_with(_turn_orchestrator(_RecordingAgent, None), "recording", ledger)
+
+    assert ledger.order == []

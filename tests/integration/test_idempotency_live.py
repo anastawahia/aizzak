@@ -186,3 +186,91 @@ async def test_rls_isolates_one_workspaces_keys_from_anothers(
     replay_two = await store.claim(two, endpoint=_ENDPOINT, key=key, request_hash="hash-a")
     assert replay_one.response_body == {"file_id": "tenant-one"}
     assert replay_two.response_body == {"file_id": "tenant-two"}
+
+
+async def test_checkpoint_keeps_the_claim_in_progress_with_its_body(
+    tenant_session: TenantSessionFactory,
+) -> None:
+    """th-3: a checkpointed claim is still unfinished (a repeat meets
+    IN_PROGRESS) but now carries the provisional body; ``complete`` after it
+    gives REPLAY with the final body."""
+    store = SqlIdempotencyStore(tenant_session)
+    ctx = _ctx(new_uuid7())
+    key = new_uuid7()
+
+    await store.claim(ctx, endpoint=_ENDPOINT, key=key, request_hash="hash-a")
+    await store.checkpoint(ctx, endpoint=_ENDPOINT, key=key, response_body={"outcome": "accepted"})
+
+    again = await store.claim(ctx, endpoint=_ENDPOINT, key=key, request_hash="hash-a")
+    assert again.outcome is ClaimOutcome.IN_PROGRESS
+    assert again.response_body == {"outcome": "accepted"}
+    assert again.age_s is not None
+
+    await store.complete(ctx, endpoint=_ENDPOINT, key=key, response_body={"outcome": "replied"})
+
+    replay = await store.claim(ctx, endpoint=_ENDPOINT, key=key, request_hash="hash-a")
+    assert replay.outcome is ClaimOutcome.REPLAY
+    assert replay.response_body == {"outcome": "replied"}
+
+
+async def test_a_late_checkpoint_cannot_overwrite_a_completed_body(
+    tenant_session: TenantSessionFactory,
+) -> None:
+    store = SqlIdempotencyStore(tenant_session)
+    ctx = _ctx(new_uuid7())
+    key = new_uuid7()
+
+    await store.claim(ctx, endpoint=_ENDPOINT, key=key, request_hash="hash-a")
+    await store.complete(ctx, endpoint=_ENDPOINT, key=key, response_body={"outcome": "replied"})
+    await store.checkpoint(ctx, endpoint=_ENDPOINT, key=key, response_body={"outcome": "accepted"})
+
+    replay = await store.claim(ctx, endpoint=_ENDPOINT, key=key, request_hash="hash-a")
+    assert replay.outcome is ClaimOutcome.REPLAY
+    assert replay.response_body == {"outcome": "replied"}
+
+
+async def test_release_does_not_delete_a_checkpointed_claim(
+    tenant_session: TenantSessionFactory,
+) -> None:
+    """An operation that has had an effect must not free its key (FR-11)."""
+    store = SqlIdempotencyStore(tenant_session)
+    ctx = _ctx(new_uuid7())
+    key = new_uuid7()
+
+    await store.claim(ctx, endpoint=_ENDPOINT, key=key, request_hash="hash-a")
+    await store.checkpoint(ctx, endpoint=_ENDPOINT, key=key, response_body={"outcome": "accepted"})
+    await store.release(ctx, endpoint=_ENDPOINT, key=key)
+
+    still_there = await store.claim(ctx, endpoint=_ENDPOINT, key=key, request_hash="hash-a")
+    assert still_there.outcome is ClaimOutcome.IN_PROGRESS
+    assert still_there.response_body == {"outcome": "accepted"}
+
+
+async def test_the_claim_age_comes_from_the_database_clock(
+    tenant_session: TenantSessionFactory,
+) -> None:
+    """``created_at`` pushed 800 s into the past in SQL: ``age_s`` is at least
+    800, and a fresh claim is near zero. No app clock is involved."""
+    store = SqlIdempotencyStore(tenant_session)
+    ctx = _ctx(new_uuid7())
+    key = new_uuid7()
+
+    await store.claim(ctx, endpoint=_ENDPOINT, key=key, request_hash="hash-a")
+    fresh = await store.claim(ctx, endpoint=_ENDPOINT, key=key, request_hash="hash-a")
+    assert fresh.age_s is not None
+    assert 0 <= fresh.age_s < 60
+
+    async with tenant_session(ctx) as session:
+        await session.execute(
+            text(
+                "UPDATE platform.idempotency_keys "
+                "SET created_at = now() - make_interval(secs => :secs) "
+                "WHERE workspace_id = :ws AND endpoint = :ep AND idempotency_key = :key"
+            ),
+            {"secs": 800, "ws": ctx.workspace_id, "ep": _ENDPOINT, "key": key},
+        )
+
+    old = await store.claim(ctx, endpoint=_ENDPOINT, key=key, request_hash="hash-a")
+    assert old.outcome is ClaimOutcome.IN_PROGRESS
+    assert old.age_s is not None
+    assert old.age_s >= 800

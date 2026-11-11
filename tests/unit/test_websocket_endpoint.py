@@ -23,7 +23,11 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app.agents.orchestrator import AgentOrchestrator, OrchestratorDependencies
-from app.api.v1.websocket.streaming import WsPrincipal, create_ws_router
+from app.api.v1.websocket.streaming import (
+    WsPrincipal,
+    _envelope_conversation_id,
+    create_ws_router,
+)
 from app.framework.agent_runtime.base_agent import (
     AgentEvent,
     AgentRequest,
@@ -472,6 +476,7 @@ def test_a_fallback_turn_keeps_the_notice_and_final_shapes_of_the_contract() -> 
                 "input": {"text": "ما هي السياسة؟"},
             }
         )
+        accepted = ws.receive_json()
         notice = ws.receive_json()
         token = ws.receive_json()
         final = ws.receive_json()
@@ -479,6 +484,13 @@ def test_a_fallback_turn_keeps_the_notice_and_final_shapes_of_the_contract() -> 
     from_to = {
         "from": {"provider": "openai", "model": _CLOUD_MODEL},
         "to": {"provider": "ollama", "model": _LOCAL_MODEL},
+    }
+    # th-3: the first frame of the turn, with the thread the client named.
+    assert accepted == {
+        "type": "accepted",
+        "conversation_id": "c-9",
+        "user_message_id": "msg-1",
+        "seq": 1,
     }
     assert set(notice) == {"type", "conversation_id", "kind", "detail", "from", "to"}
     assert notice["type"] == "notice"
@@ -496,6 +508,7 @@ def test_a_fallback_turn_keeps_the_notice_and_final_shapes_of_the_contract() -> 
         "usage",
         "fallback",
         "message_id",
+        "user_message_id",
     }
     # ... while the stored message does carry both (the persisted half of th-2).
     assert threads.statuses == [None, "complete"]
@@ -503,3 +516,18 @@ def test_a_fallback_turn_keeps_the_notice_and_final_shapes_of_the_contract() -> 
     assert stored is not None
     assert (stored.from_provider, stored.from_model) == ("openai", _CLOUD_MODEL)
     assert (stored.to_provider, stored.to_model) == ("ollama", _LOCAL_MODEL)
+
+
+# --------------------------------------------------------------------------- #
+# th-3 -- the `accepted` frame's envelope                                      #
+# --------------------------------------------------------------------------- #
+def test_the_requests_conversation_id_wins_the_envelope_except_for_accepted_without_one() -> None:
+    accepted = AgentEvent(type="accepted", data={"conversation_id": "opened-now"})
+    token = AgentEvent(type="token", data={"delta": "x"})
+
+    # an invoke that named a thread: the request's id, as it has always been
+    assert _envelope_conversation_id(accepted, "c-1") == "c-1"
+    assert _envelope_conversation_id(token, "c-1") == "c-1"
+    # no thread named: only `accepted` may carry the one just opened
+    assert _envelope_conversation_id(accepted, None) == "opened-now"
+    assert _envelope_conversation_id(token, None) is None

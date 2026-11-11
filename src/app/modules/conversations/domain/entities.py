@@ -188,6 +188,7 @@ class Conversation:
         citations: tuple[Citation, ...] | None = None,
         status: MessageStatus | None = None,
         fallback: MessageFallback | None = None,
+        reply_to: str | None = None,
     ) -> Message:
         """Append a new message, assigning the next gap-free ``seq`` (INV-CV1).
 
@@ -197,6 +198,10 @@ class Conversation:
         INV-CV5 (th-2): ``status`` and ``fallback`` are carried by ASSISTANT
         messages only, and a ``fallback`` needs a ``status``; otherwise
         ``InvalidConversationInput``.
+        INV-CV6 (th-3): ``reply_to`` is carried by ASSISTANT messages only;
+        otherwise ``InvalidConversationInput``. That it names a USER message of
+        THIS conversation is enforced by the repository's write (the aggregate
+        does not hold its messages).
         """
         self._guard_not_deleted()
         if citations is not None:
@@ -208,6 +213,8 @@ class Conversation:
             raise InvalidConversationInput("only assistant messages carry status or fallback")
         if fallback is not None and status is None:
             raise InvalidConversationInput("a fallback needs a status")
+        if reply_to is not None and role is not MessageRole.ASSISTANT:
+            raise InvalidConversationInput("only assistant messages reply to a message")
         self.message_count += 1
         seq = self.message_count
         self.updated_at = now
@@ -224,6 +231,7 @@ class Conversation:
             citations=citations,
             status=status,
             fallback=fallback,
+            reply_to=reply_to,
         )
 
     def _guard_not_deleted(self) -> None:
@@ -252,6 +260,10 @@ class Message:
     status: MessageStatus | None = None
     # th-2 -- None = the primary model answered, or not recorded.
     fallback: MessageFallback | None = None
+    # th-3 -- LAST and defaulted, for citations' reason. The id of the USER
+    # message this assistant message answers; None = not recorded (user
+    # messages, rows that predate the column, workflow steps, summaries).
+    reply_to: str | None = None
 
     def soft_delete(self, now: datetime) -> None:
         """Soft-delete the message. Idempotent: a second call is a no-op."""

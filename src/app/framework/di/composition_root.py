@@ -300,6 +300,7 @@ from app.modules.conversations.application.use_cases import (
     CountConversationsBySpace,
     ExpectClarification,
     GetConversation,
+    GetMessage,
     ListConversationFiles,
     ListConversationsByAgent,
     ListMessages,
@@ -1355,6 +1356,8 @@ def _build_conversations(
         # repository as every face above it, so the number equals what
         # `list_by_agent` would page through.
         space_counts=CountConversationsBySpace(repository),
+        # th-3 -- the replay read of `POST …/messages` with an Idempotency-Key.
+        get_message=GetMessage(repository),
     )
     threads = ConversationService(
         StartConversation(repository, spaces),

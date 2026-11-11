@@ -21,6 +21,7 @@ bug 4.7-d-2 fixed.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
@@ -216,6 +217,26 @@ def _recordable_fallback(
         return None
 
 
+def _recordable_reply_to(role: MessageRole, reply_to: str | None) -> str | None:
+    """th-3 -- the user message this assistant message answers. STRICT, like
+    _recordable_status: one writer passes it, from its own record, so a bad
+    value is a caller bug.
+
+    - reply_to is None               -> None
+    - role is not ASSISTANT          -> raise ValidationError
+    - uuid.UUID(reply_to) fails      -> raise ValidationError
+    - otherwise                      -> the canonical lower-case uuid string
+    """
+    if reply_to is None:
+        return None
+    if role is not MessageRole.ASSISTANT:
+        raise ValidationError("only assistant messages reply to a message")
+    try:
+        return str(uuid.UUID(reply_to))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValidationError("reply_to must be a message id") from exc
+
+
 class AppendMessage:
     """Append a message to an existing, non-deleted conversation (INV-CV1/CV3)."""
 
@@ -234,7 +255,10 @@ class AppendMessage:
         citations: Sequence[CitationRef] | None = None,
         status: str | None = None,
         fallback: FallbackRef | None = None,
+        reply_to: str | None = None,
     ) -> tuple[Message, tuple[ConversationEvent, ...]]:
+        # Check order: role, content, citations, status, fallback, reply_to --
+        # all before the first read (no read, no row on a refusal).
         try:
             role_enum = MessageRole(role)
         except ValueError as exc:
@@ -246,6 +270,7 @@ class AppendMessage:
         recorded = _recordable_citations(role_enum, citations)
         recorded_status = _recordable_status(role_enum, status)
         recorded_fallback = _recordable_fallback(role_enum, recorded_status, fallback)
+        recorded_reply_to = _recordable_reply_to(role_enum, reply_to)
 
         conversation = await self._conversations.get(ctx, conversation_id)
         if conversation is None:
@@ -262,6 +287,7 @@ class AppendMessage:
                 citations=recorded,
                 status=recorded_status,
                 fallback=recorded_fallback,
+                reply_to=recorded_reply_to,
             )
         except ConversationDeletedError as exc:
             raise ConflictError(str(exc)) from exc
@@ -322,6 +348,25 @@ class CountConversationsBySpace:
 
     async def execute(self, ctx: ExecutionContext, space_ids: Sequence[Uuid]) -> Mapping[Uuid, int]:
         return await self._conversations.counts_by_space(ctx, space_ids)
+
+
+class GetMessage:
+    """One LIVE message of one thread -- the read behind an Idempotency-Key
+    replay (th-3). Not a route: `03 §1` publishes none (q-10)."""
+
+    def __init__(self, conversations: ConversationRepository) -> None:
+        self._conversations = conversations
+
+    async def execute(
+        self, ctx: ExecutionContext, conversation_id: Uuid, message_id: Uuid
+    ) -> Message:
+        """``NotFoundError("message not found")`` when the repository returns
+        ``None`` (unknown, another thread's, another tenant's) OR the row is
+        soft-deleted: a replay must never hand back text the user removed."""
+        message = await self._conversations.get_message(ctx, conversation_id, message_id)
+        if message is None or message.deleted_at is not None:
+            raise NotFoundError("message not found")
+        return message
 
 
 class GetConversation:
@@ -779,6 +824,8 @@ class ConversationUseCases:
     # reason `SummariseSpaces` is on the files one: the rows are this
     # module's, and only the router may hold both.
     space_counts: CountConversationsBySpace
+    # th-3 -- the replay read of `POST …/messages` with an Idempotency-Key.
+    get_message: GetMessage
 
 
 class ConversationService:
@@ -924,6 +971,7 @@ class ConversationService:
         citations: tuple[CitationRef, ...] | None = None,
         status: str | None = None,
         fallback: FallbackRef | None = None,
+        reply_to: Uuid | None = None,
     ) -> AppendedMessage:
         message, _events = await self._append.execute(
             ctx,
@@ -935,6 +983,7 @@ class ConversationService:
             citations=citations,
             status=status,
             fallback=fallback,
+            reply_to=reply_to,
         )
         return AppendedMessage(
             id=message.id,
@@ -970,6 +1019,7 @@ class ConversationService:
                     to_model=message.fallback.to_model,
                 )
             ),
+            reply_to=message.reply_to,
         )
 
     async def start(

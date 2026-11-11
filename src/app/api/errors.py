@@ -20,6 +20,9 @@ a code we never minted, and a missing title would be a malformed problem.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Final
+
 from app.framework.errors import AppError, spec_for
 from app.framework.types import Json
 
@@ -47,6 +50,11 @@ CORRELATION_HEADER = "X-Correlation-Id"
 # producer — degrade to the catalog's "unexpected" entry rather than crash
 # the encoder mid-stream.
 _FALLBACK_CODE = "common.internal"
+
+# th-3 -- the RFC 9457 extension members (§3.2) this API may add to a problem.
+# CLOSED: a name outside this tuple is never rendered, whatever an error carries.
+# Ids only (FR-17): never text, never a detail copied from a provider.
+PROBLEM_EXTENSION_KEYS: Final[tuple[str, ...]] = ("user_message_id", "message_id")
 _FALLBACK_STATUS = 500
 
 
@@ -69,8 +77,12 @@ def problem(
     correlation_id: str | None = None,
     instance: str | None = None,
     errors: list[Json] | None = None,
+    extensions: Mapping[str, object] | None = None,
 ) -> Json:
-    """One RFC 9457 problem object (03 §4's exact field set).
+    """One RFC 9457 problem object (03 §4's exact field set, plus the closed
+    th-3 extension members: for each name in ``PROBLEM_EXTENSION_KEYS`` whose
+    value in ``extensions`` is a non-empty str, ``body[name] = value``; an
+    extension never overrides a core member).
 
     ``None`` fields are OMITTED, not emitted as nulls — the 03 §3.1 error
     event example carries only the fields it has, and ``errors[]`` exists
@@ -90,6 +102,11 @@ def problem(
         body["correlation_id"] = correlation_id
     if errors is not None:
         body["errors"] = errors
+    if extensions:
+        for name in PROBLEM_EXTENSION_KEYS:
+            value = extensions.get(name)
+            if isinstance(value, str) and value and name not in body:
+                body[name] = value
     return body
 
 
@@ -108,6 +125,7 @@ def problem_from_error(
         detail=exc.detail,
         correlation_id=correlation_id,
         instance=instance,
+        extensions=exc.extensions,
     )
 
 
@@ -128,4 +146,5 @@ def problem_from_event(data: Json, *, correlation_id: str | None = None) -> Json
         status if isinstance(status, int) and not isinstance(status, bool) else _FALLBACK_STATUS,
         detail=detail if isinstance(detail, str) else None,
         correlation_id=correlation_id,
+        extensions=data,
     )
