@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 from sqlalchemy import Uuid
 from sqlalchemy.dialects.postgresql import asyncpg
+from sqlalchemy.exc import ResourceClosedError
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ValidationError
@@ -97,10 +98,16 @@ def _message(
 
 
 class _Result:
-    def __init__(self, rows: list[dict[str, Any]]) -> None:
+    def __init__(self, rows: list[dict[str, Any]], *, returns_rows: bool = True) -> None:
         self._rows = rows
+        self._returns_rows = returns_rows
 
     def first(self) -> dict[str, Any] | None:
+        if not self._returns_rows:
+            # What a real CursorResult does for a statement with no RETURNING
+            # (an INSERT ... VALUES): fetching from it raises. A fake that always
+            # had rows hid exactly this bug (th-3, found by CI).
+            raise ResourceClosedError("This result object does not return rows.")
         return self._rows[0] if self._rows else None
 
     def mappings(self) -> _Result:
@@ -120,9 +127,14 @@ class _RecordingSession:
 
     async def execute(self, statement: Any) -> _Result:
         self._sink.append(statement)
+        returns_rows = not _is_dml(statement) or bool(statement.compile(dialect=_PG).returning)
         if self._per_call:
-            return _Result(self._per_call.pop(0))
-        return _Result(self._rows)
+            return _Result(self._per_call.pop(0), returns_rows=returns_rows)
+        return _Result(self._rows, returns_rows=returns_rows)
+
+
+def _is_dml(statement: Any) -> bool:
+    return bool(getattr(statement, "is_dml", False))
 
 
 def _repository(
@@ -500,3 +512,29 @@ async def test_list_messages_selects_reply_to_from_messages_alone() -> None:
     )
 
     assert "messages.reply_to" in _sql(statements[0])
+
+
+def test_only_the_guarded_insert_returns_rows() -> None:
+    """The append reads the INSERT's result only when it has a RETURNING. The
+    plain INSERT ... VALUES (every user message, step and summary) must not be
+    fetched from. Compile-level, so it holds on SQLAlchemy 2.0 and 2.1 alike (CI
+    resolves 2.1, the dev venv 2.0); what it cannot prove is the driver's runtime
+    behaviour, which `test_conversations_repository_rls.py` covers in CI."""
+    plain = sql_repository._insert_message(_message(None))
+    guarded = sql_repository._insert_message(_message(None, reply_to=_QUESTION))
+
+    assert not plain.compile(dialect=_PG).returning
+    assert "RETURNING" not in _sql(plain)
+    assert [c.name for c in guarded.compile(dialect=_PG).returning] == ["id"]
+    assert "RETURNING" in _sql(guarded)
+
+
+async def test_a_plain_append_never_fetches_from_the_insert_result() -> None:
+    """Regression (found by CI on SQLAlchemy 2.1, real asyncpg): every append
+    without a reply_to raised ResourceClosedError because the adapter did
+    `.first()` on an INSERT with no RETURNING."""
+    statements: list[Any] = []
+
+    await _repository(statements).append_message(_ctx(), _message(None))
+
+    assert len(statements) == 2

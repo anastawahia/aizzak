@@ -385,8 +385,10 @@ class SqlConversationRepository:
         )
         try:
             async with self._tenant_session(ctx) as session:
-                inserted = (await session.execute(insert_stmt)).first()
-                if message.reply_to is not None and inserted is None:
+                result = await session.execute(insert_stmt)
+                # Only the GUARDED insert has a RETURNING; a plain `INSERT ... VALUES`
+                # returns no rows, and fetching from it raises ResourceClosedError.
+                if message.reply_to is not None and result.first() is None:
                     # th-3: the guarded INSERT wrote nothing, so the question is
                     # not a user message of THIS conversation (or not visible to
                     # this tenant). Raised BEFORE the version UPDATE: the
