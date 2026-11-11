@@ -107,3 +107,20 @@ def test_electrical_permissions_are_the_four_and_no_role_was_added() -> None:
         "viewer",
         "platform_admin",
     }
+
+
+def test_every_role_that_may_write_conversations_may_also_read_them_and_invoke_agents() -> None:
+    """th-3 (SR-2): an Idempotency-Key REPLAY of `postMessage` returns the stored
+    answer under `conversations:write` alone -- it does not re-run the agent's
+    permission check. That is safe only while this invariant holds, so the day a
+    "write-only" role is added this test breaks and the replay needs its own check."""
+    writers = [
+        role
+        for role, permissions in RoleCatalog.items()
+        if Permission.CONVERSATIONS_WRITE in permissions
+    ]
+
+    assert writers  # the invariant is not vacuous
+    for role in writers:
+        assert Permission.CONVERSATIONS_READ in RoleCatalog[role], role
+        assert Permission.AGENTS_INVOKE in RoleCatalog[role], role

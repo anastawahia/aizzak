@@ -117,7 +117,7 @@ class SqlIdempotencyStore:
                         raise
                     return await self._inspect(session, ctx, endpoint, key, request_hash)
         except DBAPIError as exc:
-            raise _translate(exc) from exc
+            raise _translate(exc) from None
         return IdempotencyClaim(ClaimOutcome.CLAIMED)
 
     async def checkpoint(
@@ -143,7 +143,7 @@ class SqlIdempotencyStore:
             async with self._tenant_session(ctx) as session:
                 await session.execute(stmt)
         except DBAPIError as exc:
-            raise _translate(exc) from exc
+            raise _translate(exc) from None
 
     async def complete(
         self, ctx: ExecutionContext, *, endpoint: str, key: str, response_body: Json
@@ -168,7 +168,7 @@ class SqlIdempotencyStore:
             async with self._tenant_session(ctx) as session:
                 await session.execute(stmt)
         except DBAPIError as exc:
-            raise _translate(exc) from exc
+            raise _translate(exc) from None
 
     async def release(self, ctx: ExecutionContext, *, endpoint: str, key: str) -> None:
         """Drop an UNFINISHED claim (the operation raised).
@@ -191,7 +191,7 @@ class SqlIdempotencyStore:
             async with self._tenant_session(ctx) as session:
                 await session.execute(stmt)
         except DBAPIError as exc:
-            raise _translate(exc) from exc
+            raise _translate(exc) from None
 
     async def _inspect(
         self,
@@ -238,11 +238,15 @@ def _translate(exc: DBAPIError) -> AppError:
     duplicate key is ``claim``'s own normal outcome, consumed at the savepoint
     before this translator can see it."""
     sqlstate = getattr(exc.orig, "sqlstate", None)
+    # th-3 (SR-1): the new error is raised `from None` at every call site. The
+    # driver exception's text carries `[parameters: (...)]` -- the key and the
+    # raw workspace id -- and a chained traceback would put them in the log.
     if sqlstate == "42501":
         return AppError(
             "idempotency store rejected: app role lacks privileges on platform.idempotency_keys",
             code="common.internal",
         )
     return AppError(
-        "unexpected database error while using the idempotency store", code="common.internal"
+        f"unexpected database error while using the idempotency store (sqlstate {sqlstate})",
+        code="common.internal",
     )

@@ -8,14 +8,17 @@ handed are compiled with the asyncpg dialect (the app driver). Live behaviour
 
 from __future__ import annotations
 
+import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+import pytest
 from sqlalchemy.dialects.postgresql import asyncpg
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from app.framework.context.execution_context import ExecutionContext
+from app.framework.errors import AppError
 from app.framework.ports.idempotency_store import ClaimOutcome
 from app.infrastructure.persistence.idempotency import SqlIdempotencyStore
 
@@ -166,3 +169,31 @@ async def test_a_vanished_row_is_in_progress_without_an_age() -> None:
     assert claim.outcome is ClaimOutcome.IN_PROGRESS
     assert claim.age_s is None
     assert claim.response_body is None
+
+
+async def test_a_database_error_is_translated_without_the_key_or_workspace_in_its_chain() -> None:
+    """SR-1: a driver error's text carries `[parameters: (...)]` -- the key and the
+    raw workspace id. The translated error must not chain it, so no traceback
+    formatter (a logger's `exc_info`) can ever print it."""
+    secret_key = "super-secret-retry-key"
+
+    @asynccontextmanager
+    async def failing_session(_ctx: ExecutionContext) -> AsyncIterator[Any]:
+        raise DBAPIError(
+            "UPDATE platform.idempotency_keys ...", (secret_key, _WS), Exception("boom")
+        )
+        yield  # pragma: no cover
+
+    store = SqlIdempotencyStore(failing_session)  # type: ignore[arg-type]
+    for call in (
+        store.checkpoint(_ctx(), endpoint=_EP, key=secret_key, response_body={"a": 1}),
+        store.complete(_ctx(), endpoint=_EP, key=secret_key, response_body={"a": 1}),
+        store.release(_ctx(), endpoint=_EP, key=secret_key),
+    ):
+        with pytest.raises(AppError) as excinfo:
+            await call
+        rendered = "".join(traceback.format_exception(excinfo.value))
+        assert excinfo.value.__cause__ is None
+        assert secret_key not in rendered
+        assert _WS not in rendered
+        assert "sqlstate" in str(excinfo.value)

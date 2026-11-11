@@ -31,7 +31,7 @@ from app.api.v1.idempotent_turn import (
     turn_endpoint,
 )
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.errors import AppError, ConflictError
+from app.framework.errors import AppError, ConflictError, ValidationError
 from app.framework.ports.idempotency_store import ClaimOutcome, IdempotencyClaim
 from app.framework.settings import Settings
 from app.framework.types import Json
@@ -83,9 +83,28 @@ def _failed() -> TurnOutcome:
 # --------------------------------------------------------------------------- #
 # fingerprint, scope, threshold                                               #
 # --------------------------------------------------------------------------- #
-def test_the_scope_is_the_endpoint_of_the_canonical_conversation_id() -> None:
+def test_the_scope_is_the_endpoint_of_the_conversation_id() -> None:
     assert turn_endpoint(_CONV) == f"POST /conversations/{_CONV}/messages"
     assert turn_endpoint(_CONV) != turn_endpoint(_CONV.replace("c0c0", "d0d0"))
+
+
+async def test_the_row_is_scoped_by_exactly_the_id_the_caller_passes() -> None:
+    """The caller (the router) passes the conversation's CANONICAL id; this
+    function must not substitute anything else. The router-level proof that two
+    spellings land on one row is in the router suite."""
+    store = InMemoryIdempotencyStore()
+
+    await claim_turn(
+        store, _ctx(), conversation_id=_CONV, key=_KEY, content=_CONTENT, stale_after_s=_T
+    )
+
+    assert list(store.rows) == [(_W1, turn_endpoint(_CONV), _KEY)]
+
+
+def test_a_lone_surrogate_is_a_validation_error_and_valid_text_hashes_as_before() -> None:
+    with pytest.raises(ValidationError):
+        content_hash({"text": "\ud800"})
+    assert content_hash({"text": "hello"}) == hashlib.sha256(b'{"text":"hello"}').hexdigest()
 
 
 def test_the_hash_is_over_the_content_only_and_ignores_key_order() -> None:
@@ -454,7 +473,11 @@ async def test_the_normal_path_awaits_the_write_to_the_end_and_sees_its_failure(
     assert len(_DETACHED) == 0
 
 
-async def test_a_failure_after_the_awaiter_left_is_reaped_not_left_unretrieved() -> None:
+async def test_a_failure_after_the_awaiter_left_is_reaped_not_left_unretrieved(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("WARNING")
+
     class _FailsLater(InMemoryIdempotencyStore):
         gate = asyncio.Event()
 
@@ -475,6 +498,30 @@ async def test_a_failure_after_the_awaiter_left_is_reaped_not_left_unretrieved()
         await asyncio.sleep(0)
 
     assert len(_DETACHED) == 0
+    (record,) = [r for r in caplog.records if r.message == "idempotent_turn.detached_write_failed"]
+    assert record.conversation_id == _CONV  # type: ignore[attr-defined]
+    assert record.phase == "settled"  # type: ignore[attr-defined]
+    assert record.error_type == "AppError"  # type: ignore[attr-defined]
+    assert record.exc_info is None  # a driver chain would carry bound parameters
+    assert _KEY not in caplog.text
+    assert _W1 not in caplog.text
+
+
+async def test_a_failure_the_awaiter_saw_is_not_logged_a_second_time_by_the_reaper(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("WARNING")
+
+    class _Failing(InMemoryIdempotencyStore):
+        async def complete(self, *_a: object, **_k: object) -> None:
+            raise AppError("store down", code="common.internal")
+
+    ledger = await _ledger(_Failing())
+    with pytest.raises(AppError):
+        await ledger.settled(_replied())
+    await asyncio.sleep(0)
+
+    assert [r for r in caplog.records if "detached" in r.message] == []
 
 
 # --------------------------------------------------------------------------- #

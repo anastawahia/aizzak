@@ -45,6 +45,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass, replace
 from typing import Final, Literal
@@ -53,7 +54,7 @@ from app.agents.orchestrator import AcceptedTurn, TurnOutcome
 from app.api.v1.dto.conversations import MessageOut
 from app.framework.agent_runtime.base_agent import AgentEvent
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.errors import AppError, ConflictError
+from app.framework.errors import AppError, ConflictError, ValidationError
 from app.framework.ports.idempotency_store import ClaimOutcome, IdempotencyStore
 from app.framework.settings import Settings
 from app.framework.types import Json, Uuid
@@ -62,6 +63,8 @@ from app.framework.types import Json, Uuid
 # doubt: the time a live turn may spend before the stream and while saving. Fixed
 # in code, not a setting (d-t3).
 TURN_STALE_MARGIN_S: Final[float] = 120.0
+
+_logger = logging.getLogger(__name__)
 
 _HANDLE_KIND = "agent_turn"
 _HANDLE_VERSION = 1
@@ -90,7 +93,14 @@ def content_hash(content: Json) -> str:
     """sha256 over the canonical JSON of ``content`` ONLY. ``stream`` and
     ``Accept`` choose how the answer is delivered, not which question it is."""
     canonical = json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    try:
+        encoded = canonical.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        # A lone surrogate (`"\ud800"`) is valid JSON but not valid text: it could
+        # never be stored as the question either. 422, not a 500 (SR-6); the hash
+        # of every encodable content is unchanged.
+        raise ValidationError("content must be valid Unicode text") from exc
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def stale_after_s(settings: Settings) -> float:
@@ -204,15 +214,35 @@ class TurnHandle:
         )
 
 
-def _reap(task: asyncio.Task[None]) -> None:
+def _reap(
+    task: asyncio.Task[None], *, conversation_id: Uuid, phase: str, abandoned: list[bool]
+) -> None:
     """Forget a finished detached write, and read its exception so a failure
-    after the awaiter left is not reported as "never retrieved"."""
+    after the awaiter left is not reported as "never retrieved".
+
+    A failure nobody is awaiting any more (the commonest Android case: the app
+    was closed mid-stream) would otherwise leave no trace while the key stays 409
+    for the stale threshold, so it is logged ONCE: ids, phase and the exception
+    TYPE only -- never the key, never text, and no ``exc_info`` (a driver error's
+    chain carries the bound parameters, SR-1). A failure the awaiter DID see is
+    reported by that awaiter, not here.
+    """
     _DETACHED.discard(task)
-    if not task.cancelled():
-        task.exception()
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None and abandoned:
+        _logger.warning(
+            "idempotent_turn.detached_write_failed",
+            extra={
+                "conversation_id": conversation_id,
+                "phase": phase,
+                "error_type": type(exc).__name__,
+            },
+        )
 
 
-async def _shielded(write: Awaitable[None]) -> None:
+async def _shielded(write: Awaitable[None], *, conversation_id: Uuid, phase: str) -> None:
     """Run the ledger write as its own task and await it through ``asyncio.shield``.
 
     The normal path awaits it to the end (and sees its failure). When the AWAITER
@@ -222,16 +252,30 @@ async def _shielded(write: Awaitable[None]) -> None:
     """
     task = asyncio.ensure_future(write)
     _DETACHED.add(task)
-    task.add_done_callback(_reap)
-    await asyncio.shield(task)
+    abandoned: list[bool] = []
+    task.add_done_callback(
+        lambda t: _reap(t, conversation_id=conversation_id, phase=phase, abandoned=abandoned)
+    )
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        abandoned.append(True)
+        raise
 
 
 class IdempotentTurnLedger:
     """``TurnLedger`` over ``IdempotencyStore`` for ONE claimed key."""
 
     def __init__(
-        self, store: IdempotencyStore, ctx: ExecutionContext, *, endpoint: str, key: str
+        self,
+        store: IdempotencyStore,
+        ctx: ExecutionContext,
+        *,
+        endpoint: str,
+        key: str,
+        conversation_id: Uuid = "-",
     ) -> None:
+        self._conversation_id = conversation_id
         self._store = store
         self._ctx = ctx
         self._endpoint = endpoint
@@ -248,7 +292,9 @@ class IdempotentTurnLedger:
                 endpoint=self._endpoint,
                 key=self._key,
                 response_body=TurnHandle.of_accepted(turn).to_json(),
-            )
+            ),
+            conversation_id=self._conversation_id,
+            phase="accepted",
         )
 
     async def settled(self, outcome: TurnOutcome) -> None:
@@ -258,7 +304,9 @@ class IdempotentTurnLedger:
                 endpoint=self._endpoint,
                 key=self._key,
                 response_body=TurnHandle.of_outcome(outcome).to_json(),
-            )
+            ),
+            conversation_id=self._conversation_id,
+            phase="settled",
         )
 
     async def release_unless_accepted(self) -> None:
@@ -267,7 +315,11 @@ class IdempotentTurnLedger:
         does not free the key."""
         if self.accepted_turn is not None:
             return
-        await _shielded(self._store.release(self._ctx, endpoint=self._endpoint, key=self._key))
+        await _shielded(
+            self._store.release(self._ctx, endpoint=self._endpoint, key=self._key),
+            conversation_id=self._conversation_id,
+            phase="release",
+        )
 
 
 async def claim_turn(
@@ -291,7 +343,9 @@ async def claim_turn(
     endpoint = turn_endpoint(conversation_id)
     claim = await store.claim(ctx, endpoint=endpoint, key=key, request_hash=content_hash(content))
     if claim.outcome is ClaimOutcome.CLAIMED:
-        return IdempotentTurnLedger(store, ctx, endpoint=endpoint, key=key)
+        return IdempotentTurnLedger(
+            store, ctx, endpoint=endpoint, key=key, conversation_id=conversation_id
+        )
     if claim.outcome is ClaimOutcome.REPLAY:
         handle = TurnHandle.from_json(claim.response_body)
         if handle is None:

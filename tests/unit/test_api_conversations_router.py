@@ -1886,12 +1886,27 @@ def test_the_same_key_on_another_conversation_is_a_new_turn() -> None:
     assert _row_key(second_id) in store.rows
 
 
-def test_the_scope_uses_the_canonical_conversation_id_not_the_path_text() -> None:
-    client, conversation_id, store, _ = _setup()
-    _post(client, conversation_id, key=_KEY)
+def test_the_scope_uses_the_canonical_conversation_id_not_the_path_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, conversation_id, store, stack = _setup()
+    original_get = stack.repository.get
 
-    # the path is matched exactly; the stored scope is the id the database holds
-    assert list(store.rows) == [_row_key(conversation_id)]
+    async def _case_insensitive_get(ctx: ExecutionContext, requested: str) -> Any:
+        # what Postgres' uuid type does: two spellings of one id are one row
+        return await original_get(ctx, requested.lower())
+
+    monkeypatch.setattr(stack.repository, "get", _case_insensitive_get)
+    spelled_differently = conversation_id.upper()
+    assert spelled_differently != conversation_id
+
+    first = _post(client, conversation_id, key=_KEY)
+    repeat = _post(client, spelled_differently, key=_KEY)
+
+    assert first.status_code == repeat.status_code == 200
+    assert repeat.json() == first.json()  # a replay, not a second turn
+    assert len(_RUNS) == 1
+    assert list(store.rows) == [_row_key(conversation_id)]  # one row, canonical id
 
 
 @pytest.mark.parametrize("key", ["", "   ", "x" * 256])
@@ -2034,7 +2049,7 @@ def test_the_stored_handle_carries_ids_and_counts_only_after_every_path() -> Non
 
 
 # -- failures -----------------------------------------------------------------
-def test_a_failure_after_the_question_is_stored_is_a_502_with_ids_and_replays_the_same() -> None:
+def test_a_failure_after_the_question_is_stored_replays_the_same_problem_with_its_ids() -> None:
     client, conversation_id, store, _ = _setup(agent_key="half")
 
     first = _post(client, conversation_id, key=_KEY)
@@ -2468,3 +2483,20 @@ def test_the_new_log_lines_carry_neither_the_key_nor_the_text(
 
     assert secret_key not in caplog.text
     assert "my private question" not in caplog.text
+
+
+def test_a_lone_surrogate_in_content_is_a_422_not_a_500() -> None:
+    """SR-6: valid JSON, not valid text -- refused before any claim or run."""
+    client, conversation_id, store, stack = _setup()
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        headers={**_auth(), "Idempotency-Key": _KEY, "Content-Type": "application/json"},
+        content=b'{"content": {"text": "\\ud800"}}',
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "common.validation_error"
+    assert store.rows == {}
+    assert _RUNS == []
+    assert stack.repository.messages.get(conversation_id, []) == []

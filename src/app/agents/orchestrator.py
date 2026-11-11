@@ -1557,8 +1557,11 @@ class AgentOrchestrator:
           was once lost (the 4.7-c-2 lesson).
 
         A turn that persisted no message cannot be rendered as
-        ``AgentInvokeOut`` — that happens only where the conversations seam is
-        unwired, so it is a deployment fault (500), not a caller's.
+        ``AgentInvokeOut``. Two cases (th-3): the user message WAS stored but
+        the reply could not be saved -- a failed turn, ``agent.failed``/502 with
+        the question's id in the problem's extensions; and no user message was
+        stored because the conversations seam is unwired -- a deployment fault
+        (500), not a caller's.
         """
         record, events = await self._begin_turn(ctx, agent_key, req, ledger)
         final: Json = {}
@@ -1773,8 +1776,11 @@ class AgentOrchestrator:
         except Exception as exc:
             _logger.warning(
                 "orchestrator.turn_ledger_failed",
-                extra={"conversation_id": message.conversation_id, "phase": "accepted"},
-                exc_info=exc,
+                extra={
+                    "conversation_id": message.conversation_id,
+                    "phase": "accepted",
+                    "error_type": type(exc).__name__,
+                },
             )
 
     async def _settle_ledger(
@@ -1811,8 +1817,11 @@ class AgentOrchestrator:
         except Exception as exc:
             _logger.warning(
                 "orchestrator.turn_ledger_failed",
-                extra={"conversation_id": message.conversation_id, "phase": "settled"},
-                exc_info=exc,
+                extra={
+                    "conversation_id": message.conversation_id,
+                    "phase": "settled",
+                    "error_type": type(exc).__name__,
+                },
             )
 
     async def _settle_failed(self, record: _TurnRecord, event: AgentEvent) -> AgentEvent:

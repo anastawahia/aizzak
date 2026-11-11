@@ -3653,6 +3653,9 @@ async def test_a_ledger_that_raises_never_fails_the_turn_and_logs_no_text(
     records = [r for r in caplog.records if r.message == "orchestrator.turn_ledger_failed"]
     assert [r.phase for r in records] == ["accepted", "settled"]  # type: ignore[attr-defined]
     assert all(r.conversation_id == "conv-1" for r in records)  # type: ignore[attr-defined]
+    # SR-1: the exception TYPE only; a chain (`exc_info`) could carry bound parameters
+    assert all(r.exc_info is None for r in records)
+    assert all(r.error_type == "RuntimeError" for r in records)  # type: ignore[attr-defined]
 
 
 async def test_the_ledger_is_settled_at_most_once() -> None:
