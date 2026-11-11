@@ -3,10 +3,10 @@ heavy create endpoints (03-api-spec §0 · ``openapi.yaml`` ``registerFile`` /
 ``createMediaJob`` / ``runWorkflow``, landed in 3.79).
 
 03 §0 promises "`Idempotency-Key` ⇒ إعادة المحاولة آمنة" and ``openapi.yaml``
-declares the header on exactly three operations. Until 3.79 no store existed,
-so the header was accepted and silently dropped — the worst of the three
-possible states, because a client that sent it believed a retry was safe on
-paths that BILL (a media job, a workflow run) and it was not.
+declares the header on the operations that opt in (the contract lists
+them). Until 3.79 no store existed, so the header was accepted and silently
+dropped — the worst of the three possible states, because a client that sent it
+believed a retry was safe on paths that BILL (a media job, a workflow run) and it was not.
 
 **Postgres, not Redis — a decided point, not a preference.** Redis is the
 obvious cache-shaped fit and is wrong here: an eviction (maxmemory, a restart,
