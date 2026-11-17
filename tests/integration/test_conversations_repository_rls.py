@@ -23,7 +23,7 @@ from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import AppError, ConflictError, ValidationError
 from app.framework.identifiers import new_uuid7
-from app.framework.pagination import encode_id_cursor
+from app.framework.pagination import encode_desc_seq_cursor, encode_id_cursor, encode_seq_cursor
 from app.framework.settings.settings import DatabaseSettings
 from app.infrastructure.persistence.database import create_engine
 from app.modules.conversations.adapters.sql_repository import SqlConversationRepository
@@ -35,6 +35,7 @@ from app.modules.conversations.domain.value_objects import (
     ConversationKind,
     MessageContent,
     MessageFallback,
+    MessageOrder,
     MessageRole,
     MessageStatus,
 )
@@ -533,6 +534,100 @@ async def test_list_messages_rejects_a_cursor_that_does_not_carry_a_seq(
             _ctx(new_uuid7()), new_uuid7(), limit=10, cursor=foreign_cursor
         )
     assert exc_info.value.code == "common.invalid_cursor"
+
+
+# --------------------------------------------------------------------------- #
+# (10d-2) th-5: list_messages newest first                                    #
+# --------------------------------------------------------------------------- #
+async def test_list_messages_newest_first_pages_by_seq_cursor_and_excludes_deleted(
+    repo_conversations: SqlConversationRepository, live_db: LiveDbDsns
+) -> None:
+    ws = new_uuid7()
+    ctx = _ctx(ws)
+    conversation = _conversation(workspace_id=ws)
+    await repo_conversations.add(ctx, conversation)
+    now = utc_now()
+    appended = []
+    for body in ("a", "b", "c", "d", "e"):
+        message = conversation.append_message(
+            new_uuid7(), MessageRole.USER, MessageContent(text=body), None, now
+        )
+        await repo_conversations.append_message(ctx, message)
+        appended.append(message)
+    for seq in (5, 2):
+        await _soft_delete_message_as_owner(live_db.owner, ws, appended[seq - 1].id)
+
+    first = await repo_conversations.list_messages(
+        ctx, conversation.id, limit=2, cursor=None, order=MessageOrder.DESC
+    )
+    assert [m.seq for m in first.data] == [4, 3]
+    assert first.next_cursor == encode_desc_seq_cursor(3)
+
+    second = await repo_conversations.list_messages(
+        ctx, conversation.id, limit=2, cursor=first.next_cursor, order=MessageOrder.DESC
+    )
+    assert [m.seq for m in second.data] == [1]
+    assert second.next_cursor is None
+
+    # A backward cursor is refused in the forward direction, and the other way round.
+    with pytest.raises(ValidationError) as backward_as_forward:
+        await repo_conversations.list_messages(
+            ctx, conversation.id, limit=2, cursor=first.next_cursor, order=MessageOrder.ASC
+        )
+    assert backward_as_forward.value.code == "common.invalid_cursor"
+    with pytest.raises(ValidationError) as forward_as_backward:
+        await repo_conversations.list_messages(
+            ctx,
+            conversation.id,
+            limit=2,
+            cursor=encode_seq_cursor(3),
+            order=MessageOrder.DESC,
+        )
+    assert forward_as_backward.value.code == "common.invalid_cursor"
+
+
+async def test_list_messages_newest_first_is_tenant_scoped(
+    repo_conversations: SqlConversationRepository,
+) -> None:
+    ws_a, ws_b = new_uuid7(), new_uuid7()
+    ctx_a = _ctx(ws_a)
+    conversation = _conversation(workspace_id=ws_a)
+    await repo_conversations.add(ctx_a, conversation)
+    now = utc_now()
+    for body in ("a", "b"):
+        await repo_conversations.append_message(
+            ctx_a,
+            conversation.append_message(
+                new_uuid7(), MessageRole.USER, MessageContent(text=body), None, now
+            ),
+        )
+
+    other = await repo_conversations.list_messages(
+        _ctx(ws_b), conversation.id, limit=10, cursor=None, order=MessageOrder.DESC
+    )
+    mine = await repo_conversations.list_messages(
+        ctx_a, conversation.id, limit=10, cursor=None, order=MessageOrder.DESC
+    )
+
+    assert other.data == []
+    assert other.next_cursor is None
+    assert [m.seq for m in mine.data] == [2, 1]
+
+
+async def test_list_messages_refuses_a_seq_past_int4(
+    repo_conversations: SqlConversationRepository,
+) -> None:
+    """An out-of-range position is a 422 here, not the database's integer-out-of-range 500."""
+    ctx = _ctx(new_uuid7())
+    for order, cursor in (
+        (MessageOrder.ASC, encode_seq_cursor(2**31)),
+        (MessageOrder.DESC, encode_desc_seq_cursor(2**31)),
+    ):
+        with pytest.raises(ValidationError) as exc_info:
+            await repo_conversations.list_messages(
+                ctx, new_uuid7(), limit=10, cursor=cursor, order=order
+            )
+        assert exc_info.value.code == "common.invalid_cursor"
 
 
 # --------------------------------------------------------------------------- #

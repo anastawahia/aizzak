@@ -274,7 +274,12 @@ paths:
     get:
       tags: [conversations]
       operationId: listMessages
-      parameters: [ { $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" } ]
+      description: "The thread's messages, soft-deleted ones excluded (a soft-deleted message keeps its `seq`, so `seq` may have gaps). `order=asc` (the default) reads forward: oldest first, and `meta.next_cursor` continues after the last (newest) message of the page. `order=desc` reads backward: without a cursor the page is the newest `limit` messages, newest first, and `meta.next_cursor` continues before the last (oldest) message of the page. `meta.next_cursor` is `null` only when no message remains in that direction at the time of the read; a page of exactly `limit` messages is followed by `null`, never by an empty page. A cursor belongs to the direction that issued it: sending it with the other `order` (no `order` means `asc`) is 422 `common.invalid_cursor`, as is a malformed cursor or one from another collection. Cursors issued before `order` existed are `asc` cursors and stay valid. Messages added after a backward read began do not appear on its later pages. To catch up, read `order=desc` without a cursor, follow `meta.next_cursor` until a page holds a `seq` you already have, and merge by `id`. Permission `conversations:read`."
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+        - { name: order, in: query, required: false, description: "Reading direction by `seq`: `asc` oldest first, `desc` newest first. Lower case only; any other value is 422 `common.validation_error`.", schema: { type: string, enum: [asc, desc], default: asc } }
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/MessagePage" } } } }
         default: { $ref: "#/components/responses/Problem" }

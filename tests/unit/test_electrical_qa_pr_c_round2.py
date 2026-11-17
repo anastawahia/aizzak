@@ -2,7 +2,7 @@
 
 1. QA-5 closure: every non-canonical UUID text is refused by both guards (and by the driver's own
    parser), every canonical one still passes; the int4 bound of the pages listing at its edge,
-   and the bigint range of the conversation cursor untouched.
+   and the int4 bound of the conversation cursor (th-5: it was bigint before).
 2. A transient fault releases the lease and the redelivery of the same message completes.
 3. The hostile-input surface of the rework: profile PUT (no echo of client text anywhere in the
    problem), and the Markdown report.
@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import base64
-import inspect
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -26,7 +25,6 @@ from app.framework.pagination import (
     encode_seq_cursor,
     is_uuid_text,
 )
-from app.modules.conversations.adapters import sql_repository as conv
 from app.modules.electrical.drawings.adapters import sql_repository
 from app.modules.electrical.drawings.domain.errors import InspectionUnavailable
 from app.modules.electrical.drawings.domain.job import JobStatus
@@ -143,11 +141,6 @@ async def test_pages_listing_refuses_a_seq_cursor_past_int32_before_the_database
 def test_conversation_style_seq_cursors_keep_the_bigint_range() -> None:
     for n in (2**31, 2**40, 2**63 - 1, -(2**40)):
         assert decode_seq_cursor(encode_seq_cursor(n)) == n
-
-
-def test_the_conversations_and_files_adapters_still_call_the_unbounded_forms() -> None:
-    text = inspect.getsource(conv)
-    assert "decode_seq_cursor(cursor)" in text and "maximum" not in text
 
 
 # ------------------------------------------------ a transient fault, then the redelivery

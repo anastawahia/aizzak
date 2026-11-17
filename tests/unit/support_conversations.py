@@ -9,9 +9,10 @@ copying a repository fake three times is how three copies drift apart.
 The fake repository is deliberately faithful on the two things the routes
 actually depend on: ``message_count`` is ``max(seq)`` including soft-deleted
 messages (INV-CV3, so ``seq`` is never reused), and ``list_messages`` filters
-soft-deleted rows and keysets on ``seq`` exactly as the SQL adapter does. The
-cursor is the adapter's own text codec, so a cursor produced here is decoded
-by the same rules.
+soft-deleted rows and keysets on ``seq`` exactly as the SQL adapter does, in
+either direction (``order``, gap th-5). The cursors are the adapter's own text codecs,
+with the adapter's ``int4`` bound, so a cursor produced here is decoded by the same
+rules and refused where the adapter refuses it.
 """
 
 from __future__ import annotations
@@ -24,8 +25,10 @@ from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ValidationError
 from app.framework.pagination import (
     Page,
+    decode_desc_seq_cursor,
     decode_id_cursor,
     decode_seq_cursor,
+    encode_desc_seq_cursor,
     encode_id_cursor,
     encode_seq_cursor,
 )
@@ -51,8 +54,10 @@ from app.modules.conversations.application.use_cases import (
     UnpinConversationFile,
 )
 from app.modules.conversations.domain.entities import Conversation, Message, PinnedFile
-from app.modules.conversations.domain.value_objects import MessageRole
+from app.modules.conversations.domain.value_objects import MessageOrder, MessageRole
 from app.modules.conversations.ports.files import ReadableFile
+
+_INT4_MAX = 2**31 - 1  # the adapter's bound: messages.seq is an int4
 
 
 @dataclass
@@ -215,19 +220,32 @@ class InMemoryConversationRepository:
         return len(doomed)
 
     async def list_messages(
-        self, ctx: ExecutionContext, conversation_id: Uuid, *, limit: int, cursor: str | None
+        self,
+        ctx: ExecutionContext,
+        conversation_id: Uuid,
+        *,
+        limit: int,
+        cursor: str | None,
+        order: MessageOrder = MessageOrder.ASC,
     ) -> Page[Message]:
+        backward = order == MessageOrder.DESC
         visible = sorted(
             (m for m in self.messages.get(conversation_id, []) if m.deleted_at is None),
             key=lambda m: m.seq,
+            reverse=backward,
         )
         if cursor is not None:
-            after = decode_seq_cursor(cursor)
-            visible = [m for m in visible if m.seq > after]
+            if backward:
+                before = decode_desc_seq_cursor(cursor, maximum=_INT4_MAX)
+                visible = [m for m in visible if m.seq < before]
+            else:
+                after = decode_seq_cursor(cursor, maximum=_INT4_MAX)
+                visible = [m for m in visible if m.seq > after]
         window = visible[: limit + 1]
         has_more = len(window) > limit
         page = window[:limit]
-        next_cursor = encode_seq_cursor(page[-1].seq) if has_more and page else None
+        mint = encode_desc_seq_cursor if backward else encode_seq_cursor
+        next_cursor = mint(page[-1].seq) if has_more and page else None
         return Page(data=page, next_cursor=next_cursor, limit=limit)
 
 

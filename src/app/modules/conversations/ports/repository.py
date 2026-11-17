@@ -16,6 +16,7 @@ from app.framework.context.execution_context import ExecutionContext
 from app.framework.pagination import Page
 from app.framework.types import Uuid
 from app.modules.conversations.domain.entities import Conversation, Message, PinnedFile
+from app.modules.conversations.domain.value_objects import MessageOrder
 
 
 class ConversationRepository(Protocol):
@@ -33,7 +34,8 @@ class ConversationRepository(Protocol):
     the schema level guaranteeing a gap-free, non-duplicated ``seq`` (INV-CV1).
 
     ``list_messages`` (6.1-ج-1) is the read side of that append-only child:
-    one conversation's messages in ``seq`` order, soft-deleted ones excluded
+    one conversation's messages by ``seq``, oldest first or -- with
+    ``order=MessageOrder.DESC`` (gap th-5) -- newest first, soft-deleted ones excluded
     (INV-CV3). It is an ADDITION to the port sketch in `02 §2` — which lists
     only the four methods the modelling phase needed — made for the endpoint
     the API spec has always carried (`03 §1`, ``listMessages``) and which had
@@ -116,7 +118,13 @@ class ConversationRepository(Protocol):
     async def append_message(self, ctx: ExecutionContext, message: Message) -> None: ...
 
     async def list_messages(
-        self, ctx: ExecutionContext, conversation_id: Uuid, *, limit: int, cursor: str | None
+        self,
+        ctx: ExecutionContext,
+        conversation_id: Uuid,
+        *,
+        limit: int,
+        cursor: str | None,
+        order: MessageOrder = MessageOrder.ASC,
     ) -> Page[Message]: ...
 
     async def get_message(

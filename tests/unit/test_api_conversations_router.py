@@ -27,6 +27,7 @@ resolved — the whole conversation path is exercised without a provider.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from collections.abc import AsyncIterator
 from typing import Any, ClassVar
@@ -53,12 +54,14 @@ from app.framework.agent_runtime.metadata import AgentMetadata
 from app.framework.agent_runtime.registry import InMemoryAgentRegistry
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ConflictError, RateLimitedError, UnauthorizedError
+from app.framework.identifiers import new_uuid7
+from app.framework.pagination import encode_desc_seq_cursor, encode_id_cursor, encode_seq_cursor
 from app.framework.ports.embedding_provider import EmbeddingProvider
 from app.framework.providers.resolver import ResolvedProvider
 from app.framework.settings import Settings
 from app.framework.streaming import ConnectionHub
 from app.framework.workflows import InMemoryWorkflowRegistry
-from app.modules.conversations.ports.inbound import FallbackRef
+from app.modules.conversations.ports.inbound import CitationRef, FallbackRef
 from tests.unit.support_access import build_authorization
 from tests.unit.support_conversations import (
     ConversationsStack,
@@ -2500,3 +2503,605 @@ def test_a_lone_surrogate_in_content_is_a_422_not_a_500() -> None:
     assert store.rows == {}
     assert _RUNS == []
     assert stack.repository.messages.get(conversation_id, []) == []
+
+
+# --------------------------------------------------------------------------- #
+# ث-5 -- reading the transcript newest first (`order=desc`)                    #
+# --------------------------------------------------------------------------- #
+_PATH = "/api/v1/conversations/{}/messages"
+
+
+def _seed(
+    client: TestClient,
+    stack: ConversationsStack,
+    count: int,
+    *,
+    deleted: tuple[int, ...] = (),
+    texts: dict[int, str] | None = None,
+) -> str:
+    """A thread of ``count`` messages (seq 1..count) with the ``deleted`` seqs soft-deleted."""
+    conversation_id = _create(client)
+    for seq in range(1, count + 1):
+        asyncio.run(
+            stack.service.append(
+                _scope_ctx(),
+                conversation_id,
+                role="user" if seq % 2 else "assistant",
+                text=(texts or {}).get(seq, f"m{seq}"),
+            )
+        )
+    _soft_delete(stack, conversation_id, *deleted)
+    return conversation_id
+
+
+def _soft_delete(stack: ConversationsStack, conversation_id: str, *seqs: int) -> None:
+    for message in stack.repository.messages[conversation_id]:
+        if message.seq in seqs:
+            message.deleted_at = message.created_at
+
+
+def _walk(
+    client: TestClient, conversation_id: str, *, order: str | None, limit: int
+) -> list[dict[str, Any]]:
+    """Follow ``next_cursor`` to the end and return every page."""
+    pages: list[dict[str, Any]] = []
+    query = f"?limit={limit}" + ("" if order is None else f"&order={order}")
+    cursor = ""
+    while True:
+        page: dict[str, Any] = _messages(client, conversation_id, query + cursor)
+        pages.append(page)
+        next_cursor = page["meta"]["next_cursor"]
+        if next_cursor is None:
+            return pages
+        cursor = f"&cursor={next_cursor}"
+        assert len(pages) < 200
+
+
+def _seqs(pages: list[dict[str, Any]]) -> list[list[int]]:
+    return [[m["seq"] for m in page["data"]] for page in pages]
+
+
+def _ids(pages: list[dict[str, Any]]) -> list[str]:
+    return [m["id"] for page in pages for m in page["data"]]
+
+
+def _desc_app() -> tuple[TestClient, ConversationsStack]:
+    app, stack = _make_app()
+    return TestClient(app), stack
+
+
+def test_desc_first_page_is_the_newest_twenty_newest_first() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 45)
+
+    page = _messages(client, conversation_id, "?order=desc")
+
+    assert [m["seq"] for m in page["data"]] == list(range(45, 25, -1))  # type: ignore[attr-defined]
+    assert page["meta"]["limit"] == 20  # type: ignore[index]
+    assert isinstance(page["meta"]["next_cursor"], str) and page["meta"]["next_cursor"]  # type: ignore[index]
+
+
+def test_desc_short_thread_is_one_page_with_a_null_cursor() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 5)
+
+    page = _messages(client, conversation_id, "?order=desc&limit=20")
+
+    assert [m["seq"] for m in page["data"]] == [5, 4, 3, 2, 1]  # type: ignore[attr-defined]
+    assert page["meta"]["next_cursor"] is None  # type: ignore[index]
+
+
+def test_desc_exactly_limit_messages_has_no_phantom_page() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 20)
+
+    page = _messages(client, conversation_id, "?order=desc&limit=20")
+
+    assert len(page["data"]) == 20  # type: ignore[arg-type]
+    assert page["meta"]["next_cursor"] is None  # type: ignore[index]
+
+
+def test_desc_of_a_fresh_thread_is_an_empty_page() -> None:
+    client, _ = _desc_app()
+    conversation_id = _create(client)
+
+    page = _messages(client, conversation_id, "?order=desc")
+
+    assert page == {"data": [], "meta": {"next_cursor": None, "limit": 20}}
+
+
+def test_desc_first_page_skips_the_soft_deleted_newest() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 45, deleted=(44, 45))
+
+    page = _messages(client, conversation_id, "?order=desc&limit=3")
+
+    assert [m["seq"] for m in page["data"]] == [43, 42, 41]  # type: ignore[attr-defined]
+
+
+def test_desc_and_asc_walks_return_the_same_messages_byte_for_byte() -> None:
+    client, stack = _desc_app()
+    arabic = "مَرْحَبًا بِالْعَالَمِ 👋🏽 ٣٤٥"
+    conversation_id = _seed(client, stack, 4, texts={1: arabic, 3: "x" * 100_000})
+    asyncio.run(
+        stack.service.append(
+            _scope_ctx(),
+            conversation_id,
+            role="assistant",
+            text="answer",
+            citations=(CitationRef("d1", "a.pdf", 2, "c1", 1),),
+            status="partial",
+            fallback=_FALLBACK_REF,
+            reply_to=stack.repository.messages[conversation_id][0].id,
+        )
+    )
+
+    asc = [m for page in _walk(client, conversation_id, order="asc", limit=2) for m in page["data"]]
+    desc = [
+        m for page in _walk(client, conversation_id, order="desc", limit=2) for m in page["data"]
+    ]
+
+    by_id = {m["id"]: m for m in asc}
+    assert len(desc) == len(asc) == 5
+    assert all(by_id[m["id"]] == m for m in desc)
+    assert any(m["status"] == "partial" and m["fallback"] and m["reply_to"] for m in desc)
+    raw = client.get(
+        _PATH.format(conversation_id) + "?order=desc&limit=100", headers=_auth()
+    ).content
+    assert arabic.encode("utf-8") in raw
+    assert b"\\u" not in raw
+
+
+def test_desc_full_walk_is_three_pages_of_20_20_5() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 45)
+
+    pages = _walk(client, conversation_id, order="desc", limit=20)
+
+    assert _seqs(pages) == [
+        list(range(45, 25, -1)),
+        list(range(25, 5, -1)),
+        [5, 4, 3, 2, 1],
+    ]
+
+
+def test_desc_walk_is_the_exact_reverse_of_the_asc_walk_across_gaps() -> None:
+    client, stack = _desc_app()
+    gone = (10, 20, 21, 30, 60)
+    conversation_id = _seed(client, stack, 60, deleted=gone)
+
+    asc = _walk(client, conversation_id, order="asc", limit=7)
+    desc = _walk(client, conversation_id, order="desc", limit=7)
+
+    seen = [seq for page in _seqs(desc) for seq in page]
+    assert sorted(seen) == [n for n in range(1, 61) if n not in gone]
+    assert len(seen) == len(set(seen))
+    assert _ids(desc) == list(reversed(_ids(asc)))
+
+
+def test_messages_appended_mid_walk_never_enter_its_later_pages() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 45)
+    first = _messages(client, conversation_id, "?order=desc&limit=20")
+    for n in range(46, 49):
+        asyncio.run(stack.service.append(_scope_ctx(), conversation_id, role="user", text=f"m{n}"))
+
+    cursor = first["meta"]["next_cursor"]  # type: ignore[index]
+    second = _messages(client, conversation_id, f"?order=desc&limit=20&cursor={cursor}")
+    third = _messages(
+        client,
+        conversation_id,
+        f"?order=desc&limit=20&cursor={second['meta']['next_cursor']}",  # type: ignore[index]
+    )
+    fresh = _messages(client, conversation_id, "?order=desc&limit=20")
+
+    assert [m["seq"] for m in second["data"]] == list(range(25, 5, -1))  # type: ignore[attr-defined]
+    assert [m["seq"] for m in third["data"]] == [5, 4, 3, 2, 1]  # type: ignore[attr-defined]
+    assert fresh["data"][0]["seq"] == 48  # type: ignore[index]
+
+
+def test_a_soft_delete_mid_walk_neither_shifts_nor_skips() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 45)
+    first = _messages(client, conversation_id, "?order=desc&limit=20")
+    _soft_delete(stack, conversation_id, 15, 40)
+
+    cursor = first["meta"]["next_cursor"]  # type: ignore[index]
+    second = _messages(client, conversation_id, f"?order=desc&limit=20&cursor={cursor}")
+    third = _messages(
+        client,
+        conversation_id,
+        f"?order=desc&limit=20&cursor={second['meta']['next_cursor']}",  # type: ignore[index]
+    )
+
+    # The cursor is a POSITION, not a row count: seq 15 simply vanishes from the page
+    # and the page fills from below it, so nothing shifts and nothing is skipped.
+    got = [m["seq"] for m in second["data"]]  # type: ignore[attr-defined]
+    assert got == [n for n in range(25, 4, -1) if n != 15]
+    assert len(got) == 20
+    assert [m["seq"] for m in third["data"]] == [4, 3, 2, 1]  # type: ignore[attr-defined]
+    assert third["meta"]["next_cursor"] is None  # type: ignore[index]
+
+
+def test_a_non_null_desc_cursor_has_an_older_message_unless_all_were_deleted() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 10)
+    cursor = _messages(client, conversation_id, "?order=desc&limit=3")["meta"]["next_cursor"]  # type: ignore[index]
+
+    older = _messages(client, conversation_id, f"?order=desc&limit=3&cursor={cursor}")
+    assert older["data"]
+
+    _soft_delete(stack, conversation_id, *range(1, 8))
+    empty = _messages(client, conversation_id, f"?order=desc&limit=3&cursor={cursor}")
+    assert empty["data"] == []
+    assert empty["meta"]["next_cursor"] is None  # type: ignore[index]
+
+
+def test_the_catch_up_recipe_finds_every_new_message_once() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 45)
+    for n in range(46, 71):
+        asyncio.run(stack.service.append(_scope_ctx(), conversation_id, role="user", text=f"m{n}"))
+
+    pages: list[dict[str, Any]] = []
+    query, cursor = "?order=desc&limit=20", ""
+    while True:
+        page: dict[str, Any] = _messages(client, conversation_id, query + cursor)
+        pages.append(page)
+        if any(m["seq"] <= 45 for m in page["data"]) or page["meta"]["next_cursor"] is None:
+            break
+        cursor = f"&cursor={page['meta']['next_cursor']}"
+
+    assert len(pages) == 2
+    merged = {m["id"]: m for page in pages for m in page["data"] if m["seq"] > 45}
+    assert sorted(m["seq"] for m in merged.values()) == list(range(46, 71))
+    assert len(_ids(pages)) - len([m for p in pages for m in p["data"] if m["seq"] <= 45]) == 25
+
+
+def test_desc_first_page_holds_the_turn_and_the_reply_to_it() -> None:
+    client, _ = _desc_app()
+    conversation_id = _create(client)
+
+    frames = _frames(_ask(client, conversation_id, stream=True).text)  # type: ignore[attr-defined]
+    accepted = dict(frames)["accepted"]
+    page = _messages(client, conversation_id, "?order=desc&limit=20")["data"]
+
+    by_role = {m["role"]: m for m in page}  # type: ignore[attr-defined]
+    assert by_role["user"]["id"] == accepted["user_message_id"]
+    assert by_role["assistant"]["reply_to"] == accepted["user_message_id"]
+
+
+def test_the_default_walk_is_unchanged() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 45)
+
+    pages = _walk(client, conversation_id, order=None, limit=20)
+
+    assert _seqs(pages) == [list(range(1, 21)), list(range(21, 41)), list(range(41, 46))]
+
+
+def test_no_order_and_order_asc_are_byte_identical() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 30)
+    path = _PATH.format(conversation_id)
+    cursor = encode_seq_cursor(20)
+
+    for query in ("?limit=7", f"?limit=7&cursor={cursor}"):
+        plain = client.get(path + query, headers=_auth())
+        asc = client.get(path + query + "&order=asc", headers=_auth())
+        assert plain.status_code == asc.status_code == 200
+        assert plain.content == asc.content
+
+
+def test_a_cursor_minted_before_the_change_still_reads_forward() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 30)
+    cursor = encode_seq_cursor(20)
+
+    for extra in ("", "&order=asc"):
+        page = _messages(client, conversation_id, f"?limit=5&cursor={cursor}{extra}")
+        assert [m["seq"] for m in page["data"]] == [21, 22, 23, 24, 25]  # type: ignore[attr-defined]
+
+
+def test_page_keys_are_the_same_in_both_directions() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 5)
+
+    for order in ("asc", "desc"):
+        body = _messages(client, conversation_id, f"?order={order}")
+        assert set(body) == {"data", "meta"}
+        assert set(body["meta"]) == {"next_cursor", "limit"}  # type: ignore[call-overload]
+        assert {frozenset(m) for m in body["data"]} == {  # type: ignore[attr-defined]
+            frozenset(_messages(client, conversation_id)["data"][0])  # type: ignore[index]
+        }
+
+
+@pytest.mark.parametrize("order", ["foo", "DESC", ""])
+def test_an_unknown_order_is_a_validation_error(
+    order: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 3)
+
+    async def _never(*args: object, **kwargs: object) -> None:
+        raise AssertionError("list_messages must not be reached")
+
+    monkeypatch.setattr(stack.repository, "list_messages", _never)
+
+    response = client.get(_PATH.format(conversation_id) + f"?order={order}", headers=_auth())
+
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)
+    assert response.json()["code"] == "common.validation_error"
+
+
+def test_a_cursor_never_crosses_directions() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 30)
+    path = _PATH.format(conversation_id)
+    backward, forward = encode_desc_seq_cursor(20), encode_seq_cursor(20)
+
+    for query in (
+        f"?cursor={backward}",
+        f"?cursor={backward}&order=asc",
+        f"?order=desc&cursor={forward}",
+    ):
+        response = client.get(path + query, headers=_auth())
+        assert response.status_code == 422, query
+        assert response.json()["code"] == "common.invalid_cursor"
+
+
+def test_desc_refuses_malformed_and_foreign_cursors() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 3)
+
+    for cursor in ("!!!!", encode_id_cursor(new_uuid7())):
+        response = client.get(
+            _PATH.format(conversation_id) + f"?order=desc&cursor={cursor}", headers=_auth()
+        )
+        assert response.status_code == 422
+        assert response.json()["code"] == "common.invalid_cursor"
+        assert cursor not in response.text
+        assert cursor not in response.json().get("detail", "")
+
+
+@pytest.mark.parametrize("order", ["asc", "desc"])
+def test_a_cursor_past_int4_is_invalid_cursor_not_500(order: str) -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 3)
+    mint = encode_desc_seq_cursor if order == "desc" else encode_seq_cursor
+
+    response = client.get(
+        _PATH.format(conversation_id) + f"?order={order}&cursor={mint(2**31)}", headers=_auth()
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "common.invalid_cursor"
+
+
+@pytest.mark.parametrize(
+    ("limit", "status"),
+    [("0", 422), ("101", 422), ("-1", 422), ("abc", 422), ("1", 200), ("100", 200)],
+)
+def test_desc_limit_keeps_its_bounds(limit: str, status: int) -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 3)
+
+    response = client.get(
+        _PATH.format(conversation_id) + f"?order=desc&limit={limit}", headers=_auth()
+    )
+
+    assert response.status_code == status
+    if status == 422:
+        assert response.json()["code"] == "common.validation_error"
+
+
+def test_desc_guards_are_the_asc_guards(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 3)
+    deleted_id = _seed(client, stack, 1)
+    assert client.delete(f"/api/v1/conversations/{deleted_id}", headers=_auth()).status_code == 204
+    path = _PATH.format(conversation_id) + "?order=desc"
+
+    assert client.get(path).status_code == 401
+    for unknown in ("nope", deleted_id):
+        response = client.get(_PATH.format(unknown) + "?order=desc", headers=_auth())
+        assert response.status_code == 404
+        assert response.json()["code"] == "common.not_found"
+
+    async def _as_other_workspace(self: _FakeAuth, token: str) -> Principal:
+        return Principal(
+            workspace_id="018f0000-0000-7000-8000-0000000000w2",
+            user_id="018f0000-0000-7000-8000-0000000000u2",
+            roles=frozenset({"owner"}),
+        )
+
+    async def _as_nobody(self: _FakeAuth, token: str) -> Principal:
+        return Principal(workspace_id=_W1, user_id=_U1, roles=frozenset())
+
+    monkeypatch.setattr(_FakeAuth, "authenticate", _as_other_workspace)
+    assert client.get(path, headers=_auth()).status_code == 404
+    monkeypatch.setattr(_FakeAuth, "authenticate", _as_nobody)
+    forbidden = client.get(path, headers=_auth())
+    assert forbidden.status_code == 403
+    assert forbidden.json()["code"] == "authz.forbidden"
+
+
+def test_a_desc_cursor_at_or_below_the_oldest_is_an_empty_last_page() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 5)
+
+    for seq in (1, 0):
+        page = _messages(
+            client, conversation_id, f"?order=desc&cursor={encode_desc_seq_cursor(seq)}"
+        )
+        assert page["data"] == []
+        assert page["meta"]["next_cursor"] is None  # type: ignore[index]
+
+
+# --------------------------------------------------------------------------- #
+# ث-5 -- QA edge cases (data-search-history-cursor, qa-engineer)               #
+# --------------------------------------------------------------------------- #
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+@pytest.mark.parametrize("order", ["asc", "desc"])
+def test_qa_an_unknown_thread_is_404_before_a_bad_cursor_is_looked_at(order: str) -> None:
+    """The guard order (design d-t5): the conversation read (404) precedes the cursor (422)."""
+    client, _stack = _desc_app()
+    response = client.get(
+        _PATH.format(new_uuid7()) + f"?order={order}&cursor=!!!!", headers=_auth()
+    )
+    assert response.status_code == 404
+    assert response.json()["code"] == "common.not_found"
+
+
+def test_qa_the_int4_boundary_is_exact_in_both_directions() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 3)
+    path = _PATH.format(conversation_id)
+
+    # 2^31 - 1 is a legal position: 200 (and, for desc, everything is below it).
+    top = client.get(
+        path + f"?order=desc&cursor={encode_desc_seq_cursor(2**31 - 1)}", headers=_auth()
+    )
+    assert top.status_code == 200
+    assert [m["seq"] for m in top.json()["data"]] == [3, 2, 1]
+    fwd = client.get(path + f"?cursor={encode_seq_cursor(2**31 - 1)}", headers=_auth())
+    assert fwd.status_code == 200
+    assert fwd.json()["data"] == []
+
+    for order, mint in (("desc", encode_desc_seq_cursor), ("asc", encode_seq_cursor)):
+        for seq in (2**31, -(2**31), 2**63):
+            response = client.get(path + f"?order={order}&cursor={mint(seq)}", headers=_auth())
+            assert response.status_code == 422, (order, seq)
+            assert response.json()["code"] == "common.invalid_cursor"
+
+    # A negative in-range position is legal: desc finds nothing below it, asc restarts.
+    below = client.get(path + f"?order=desc&cursor={encode_desc_seq_cursor(-5)}", headers=_auth())
+    assert below.status_code == 200 and below.json()["data"] == []
+    restart = client.get(path + f"?cursor={encode_seq_cursor(-5)}", headers=_auth())
+    assert [m["seq"] for m in restart.json()["data"]] == [1, 2, 3]
+
+
+@pytest.mark.parametrize(
+    "cursor",
+    [
+        "%%%",
+        "PDI2%20",
+        "\u0627",  # Arabic letter, outside the alphabet
+        "\u0662\u0666",  # Arabic-Indic digits
+        _b64(b"<"),
+        _b64(b"<<26"),
+        _b64(b"<abc"),
+        _b64(b"<2.5"),
+        _b64(b"<\xff\xfe"),  # not UTF-8
+        _b64(b"26"),  # a forward payload
+        _b64(b""),
+    ],
+)
+def test_qa_desc_refuses_every_malformed_cursor_with_422_and_never_500(cursor: str) -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 3)
+    response = client.get(
+        _PATH.format(conversation_id) + f"?order=desc&cursor={cursor}", headers=_auth()
+    )
+    assert response.status_code == 422, cursor
+    assert response.json()["code"] == "common.invalid_cursor"
+
+
+def test_qa_desc_cursor_round_trips_over_a_wide_range_through_http() -> None:
+    """Every issued backward cursor is URL-safe and spendable (no '+', '/', '=')."""
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 3)
+    for seq in [*range(400), 4_211, 99_999, 2**31 - 1]:
+        cursor = encode_desc_seq_cursor(seq)
+        assert not set(cursor) & set("+/=")
+        response = client.get(
+            _PATH.format(conversation_id) + f"?order=desc&cursor={cursor}", headers=_auth()
+        )
+        assert response.status_code == 200, seq
+        assert [m["seq"] for m in response.json()["data"]] == [s for s in (3, 2, 1) if s < seq]
+
+
+@pytest.mark.parametrize("order", ["asc", "desc"])
+def test_qa_a_thread_of_only_soft_deleted_messages_is_an_empty_page(order: str) -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 6, deleted=(1, 2, 3, 4, 5, 6))
+    page = _messages(client, conversation_id, f"?order={order}&limit=2")
+    assert page["data"] == []
+    assert page["meta"] == {"next_cursor": None, "limit": 2}  # type: ignore[comparison-overlap]
+
+
+def test_qa_desc_limit_bounds_on_a_long_thread() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 105)
+    one = _messages(client, conversation_id, "?order=desc&limit=1")
+    assert [m["seq"] for m in one["data"]] == [105]  # type: ignore[attr-defined]
+    assert one["meta"]["next_cursor"] is not None  # type: ignore[index]
+    top = _messages(client, conversation_id, "?order=desc&limit=100")
+    assert [m["seq"] for m in top["data"]] == list(range(105, 5, -1))  # type: ignore[attr-defined]
+    assert top["meta"]["limit"] == 100  # type: ignore[index]
+    for bad in ("101", "0", "-1", "", "1.5", "%D9%A1"):
+        response = client.get(
+            _PATH.format(conversation_id) + f"?order=desc&limit={bad}", headers=_auth()
+        )
+        assert response.status_code == 422, bad
+        assert response.json()["code"] == "common.validation_error"
+
+
+@pytest.mark.parametrize(
+    "order", ["Desc", "dEsC", "%20desc", "desc%20", "descending", "DESC", "0", "null", "%D8%AA"]
+)
+def test_qa_order_is_case_and_whitespace_strict(order: str) -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 3)
+    response = client.get(_PATH.format(conversation_id) + f"?order={order}", headers=_auth())
+    assert response.status_code == 422
+    assert response.json()["code"] == "common.validation_error"
+
+
+def test_qa_a_repeated_order_parameter_never_5xx() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 3)
+    response = client.get(_PATH.format(conversation_id) + "?order=asc&order=desc", headers=_auth())
+    assert response.status_code in (200, 422)
+
+
+def test_qa_a_desc_read_is_idempotent_double_submit() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 30)
+    path = _PATH.format(conversation_id) + "?order=desc&limit=7"
+    first, second = client.get(path, headers=_auth()), client.get(path, headers=_auth())
+    assert first.content == second.content
+    cursor = first.json()["meta"]["next_cursor"]
+    again = [client.get(path + f"&cursor={cursor}", headers=_auth()).content for _ in range(2)]
+    assert again[0] == again[1]
+
+
+def test_qa_appends_mid_backward_walk_with_a_tiny_limit_never_duplicate_or_skip() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 12)
+    seen: list[int] = []
+    query, cursor, appended = "?order=desc&limit=3", "", 12
+    while True:
+        page = _messages(client, conversation_id, query + cursor)
+        seen += [m["seq"] for m in page["data"]]  # type: ignore[attr-defined]
+        appended += 1
+        asyncio.run(
+            stack.service.append(_scope_ctx(), conversation_id, role="user", text=f"n{appended}")
+        )
+        next_cursor = page["meta"]["next_cursor"]  # type: ignore[index]
+        if next_cursor is None:
+            break
+        cursor = f"&cursor={next_cursor}"
+    assert seen == list(range(12, 0, -1))
+
+
+def test_qa_a_request_without_a_token_is_refused_in_both_directions() -> None:
+    """No token: 401 for order=asc and order=desc alike."""
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 2)
+    for order in ("asc", "desc"):
+        assert client.get(_PATH.format(conversation_id) + f"?order={order}").status_code == 401
