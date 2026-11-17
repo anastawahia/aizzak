@@ -3692,7 +3692,7 @@ async def test_no_ledger_without_a_conversations_seam() -> None:
 # ث-7 -- a pin on a deleted file (data-search-deleted-pins)                    #
 # --------------------------------------------------------------------------- #
 _T7_OTHER = "018f0000-0000-7000-8000-0000000000ot"
-_T7_APOLOGY = "I don't have enough information in the workspace documents"
+_T7_APOLOGY = "I don't have enough information in the workspace documents to answer that."
 
 
 class _T7LLM(_FakeLLM):
@@ -3843,7 +3843,7 @@ async def test_no_live_pin_left_widens_the_turn_to_the_threads_space() -> None:
     assert t7.knowledge.scopes == [None]
     assert set(t7.knowledge.spaces) == {_SPACE}
     assert _t7_cited(events) == ["doc-C"]
-    assert not _t7_final(events).data["text"].startswith(_T7_APOLOGY)
+    assert _t7_final(events).data["text"] == "answer"
     assert t7.llm.streams == 1
     assert t7.resolver.calls, "the model was resolved for this turn"
 
@@ -3882,7 +3882,7 @@ async def test_a_live_unindexed_pin_still_falls_back() -> None:
     events = await t7.turn()
 
     assert t7.knowledge.scopes == [("F",)]
-    assert _t7_final(events).data["text"].startswith(_T7_APOLOGY)
+    assert _t7_final(events).data["text"] == _T7_APOLOGY
     assert _t7_cited(events) == []
 
 
@@ -3903,7 +3903,7 @@ async def test_a_file_deleted_mid_turn_never_widens_that_turn() -> None:
 
     assert t7.knowledge.scopes == [("A",)]
     assert _t7_cited(events) == []
-    assert _t7_final(events).data["text"].startswith(_T7_APOLOGY)
+    assert _t7_final(events).data["text"] == _T7_APOLOGY
     assert t7.llm.streams == 0, "an empty retrieval gets the fixed apology, not the model"
 
     await t7.turn()

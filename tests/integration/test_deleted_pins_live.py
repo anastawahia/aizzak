@@ -76,8 +76,8 @@ from tests.integration.conftest import LiveDbDsns
 pytestmark = [pytest.mark.live_db]
 
 
-class _RecordingVectors:
-    """The one ``HybridVectorStore`` method the cascade calls, recording only."""
+class _NoopVectors:
+    """The one ``HybridVectorStore`` method the cascade calls, doing nothing."""
 
     async def delete(self, collection: str, ids: Sequence[str]) -> None:
         return None
@@ -130,10 +130,10 @@ def _service(tenant_session: TenantSessionFactory) -> DeleteFileService:
     return DeleteFileService(
         SoftDeleteFileService(
             SoftDeleteFile(SqlFileRepository(tenant_session)),
-            _NoopOutbox(),  # type: ignore[arg-type]
-            _NoopUnitOfWork(),  # type: ignore[arg-type]
+            _NoopOutbox(),
+            _NoopUnitOfWork(),
         ),
-        knowledge=PurgeFileKnowledge(SqlDocumentRepository(tenant_session), _RecordingVectors()),
+        knowledge=PurgeFileKnowledge(SqlDocumentRepository(tenant_session), _NoopVectors()),  # type: ignore[arg-type]
         electrical=ElectricalFilePurge(
             drawings=PurgeFileDocuments(
                 SqlDrawingDocumentRepository(tenant_session),
@@ -167,7 +167,7 @@ class _Stack:
         self.files = FilesQueryService(SqlFileRepository(tenant_session))
         self.pin = PinConversationFile(self.repository, self.files)
         self.list_files = ListConversationFiles(self.repository, self.files)
-        self.service = ConversationService(  # type: ignore[arg-type]
+        self.service = ConversationService(
             StartConversation(
                 self.repository, SpacesQueryService(SqlSpaceRepository(tenant_session))
             ),

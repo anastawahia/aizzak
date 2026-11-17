@@ -1606,7 +1606,9 @@ async def test_the_bound_counts_and_reports_live_pins_only() -> None:
         )
     files.ready.add("fresh")
 
-    with pytest.raises(ValidationError, match=r"\(currently 50\)"):
+    with pytest.raises(
+        ValidationError, match=r"^a conversation may pin at most 50 files \(currently 50\)$"
+    ):
         await pin.execute(_ctx(), conversation.id, "fresh")
 
 
@@ -1649,7 +1651,7 @@ async def test_a_not_found_from_the_files_seam_is_never_an_unknown_thread() -> N
         await lister.execute(_ctx(), conversation.id)
     assert not isinstance(excinfo.value, NotFoundError)
     assert excinfo.value.code == "common.internal"
-    assert "A" not in str(excinfo.value)
+    assert str(excinfo.value) == "the pinned files could not be checked"
 
     with pytest.raises(AppError) as scope_error:
         await _t7_service(conversations, lister).pinned_files(_ctx(), conversation.id)
@@ -1751,7 +1753,10 @@ async def test_qa_the_scope_bound_at_49_50_51_stored_rows_with_orphans(
     if accepted:
         assert (await pin.execute(_ctx(), conversation.id, "fresh")).file_id == "fresh"
     else:
-        with pytest.raises(ValidationError, match=rf"\(currently {live}\)"):
+        with pytest.raises(
+            ValidationError,
+            match=rf"^a conversation may pin at most 50 files \(currently {live}\)$",
+        ):
             await pin.execute(_ctx(), conversation.id, "fresh")
         assert "fresh" not in [p.file_id for p in conversations.pins[conversation.id]]
     assert len(files.bulk_calls) == bulk_reads
@@ -1816,29 +1821,22 @@ async def test_qa_a_failed_check_never_turns_into_an_empty_unscoped_answer() -> 
 
 
 async def test_qa_the_files_check_runs_under_the_callers_own_context() -> None:
-    """Tenant isolation at the seam: the bulk read is asked with the caller's ctx and
-    answers per workspace, so one workspace's live ids never vouch for another's."""
+    """The bulk read is asked with the caller's own ctx, not a default one."""
     seen: list[str] = []
 
     @dataclass
-    class _PerTenantFiles(_FakeReadableFiles):
-        live_by_tenant: dict[str, set[str]] = field(default_factory=dict)
-
+    class _CtxRecordingFiles(_FakeReadableFiles):
         async def names_for_files(
             self, ctx: ExecutionContext, file_ids: Sequence[str]
         ) -> dict[str, str]:
             seen.append(ctx.workspace_id)
-            mine = self.live_by_tenant.get(ctx.workspace_id, set())
-            return {fid: fid for fid in file_ids if fid in mine}
+            return {fid: fid for fid in file_ids}
 
     conversations, conversation, _, _ = await _t7_pinned(["A"])
-    files = _PerTenantFiles(live_by_tenant={"w1": {"A"}})
-    lister = ListConversationFiles(conversations, files)
+    lister = ListConversationFiles(conversations, _CtxRecordingFiles(ready={"A"}))
 
     assert [p.file_id for p in await lister.execute(_ctx("w1"), conversation.id)] == ["A"]
-    # A caller of another workspace whose seam knows nothing of "A" sees no pin.
-    assert await lister.execute(_ctx("w2"), conversation.id) == []
-    assert seen == ["w1", "w2"]
+    assert seen == ["w1"]
 
 
 async def test_qa_unpinning_is_idempotent_for_live_orphan_and_unknown_ids() -> None:

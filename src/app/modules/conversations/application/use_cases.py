@@ -942,8 +942,8 @@ class ConversationService:
         The ids are the thread's LIVE pins (gap th-7), the very list
         ``GET …/files`` returns: a thread whose every pinned file was deleted
         answers ``()`` and is unscoped again, exactly as after unpinning the
-        last file. Missing thread ⇒ ``()``; a failed files check RAISES, and
-        the turn fails before anything is written -- it never becomes ``()``.
+        last file. A failed files check RAISES, and the turn fails before
+        anything is written -- it never becomes ``()``.
 
         Missing thread ⇒ ``()``, for ``routed_model``'s reason. A soft-deleted
         one answers with its real live pins rather than ``()``: ``ListConversationFiles``

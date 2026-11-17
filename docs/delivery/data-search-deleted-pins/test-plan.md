@@ -38,7 +38,7 @@
 | AC‑4.4 | واجهة + منسّق | `R::test_a_failed_files_read_fails_the_turn_before_anything_is_written` (stream true/false، لا رسالة، `_RUNS == []`، وإعادة بالمفتاح نفسه تنجح = حُرّر)، `O::test_a_failed_files_read_reserves_nothing_and_never_reaches_knowledge` | ✅ |
 | AC‑5.1 | وحدة | `UC::test_a_thread_with_no_pins_never_asks_the_files_module` | ✅ |
 | AC‑5.2 | وحدة | `UC::test_one_bulk_read_per_list_and_per_turn_whatever_the_size` (1، 2، 50) | ✅ |
-| AC‑5.3 | CI فقط (+ عزل بوحدة QA) | `LIVE::test_a_pin_on_a_file_this_tenant_deleted_is_gone_and_another_tenant_sees_nothing`. وجديد QA: `UC::test_qa_the_files_check_runs_under_the_callers_own_context` (يثبت تمرير سياق المنادي) | ✅ (الحي CI) |
+| AC‑5.3 | CI فقط | `LIVE::test_a_pin_on_a_file_this_tenant_deleted_is_gone_and_another_tenant_sees_nothing`. وجديد QA: `UC::test_qa_the_files_check_runs_under_the_callers_own_context` (يثبت تمرير سياق المنادي فقط، وليس العزل بين المستأجرين) | ✅ (الحي CI) |
 | AC‑5.4 | بوابة + مراجعة | `lint-imports`: 9 عقود kept، 0 broken. `git diff master -- .importlinter` فارغ. `grep app.modules.files` في `conversations` يعيد تعليق docstring موجوداً على `master` (`ports/files.py:60`) وليس استيراداً | ✅ |
 | AC‑5.5 | بوابة + وحدة | `mypy src` نظيف. `CR::test_the_pin_list_and_bound_share_one_files_seam` | ✅ |
 | AC‑5.6 | مراجعة | `git diff --stat master -- src/app/modules/files` فارغ (تحققتُ) | ✅ |
