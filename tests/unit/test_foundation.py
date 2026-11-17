@@ -3,6 +3,7 @@ redaction, structured logging, settings). Pure — no infrastructure."""
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from uuid import UUID
@@ -73,6 +74,10 @@ def test_desc_seq_cursor_is_tagged() -> None:
     assert encode_desc_seq_cursor(20) == "PDIw"
 
 
+def _envelope(payload: str) -> str:
+    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+
+
 def _rejected_with_invalid_cursor(decode: object, cursor: str) -> None:
     assert callable(decode)
     with pytest.raises(ValidationError) as exc:
@@ -98,6 +103,22 @@ def test_seq_cursors_refuse_the_other_direction() -> None:
 )
 def test_decode_desc_seq_cursor_rejects_garbage(cursor: str) -> None:
     _rejected_with_invalid_cursor(decode_desc_seq_cursor, cursor)
+
+
+@pytest.mark.parametrize("payload", [" 26", "26 ", "+26", "2_6", "\u0662\u0666", "", "-", "--26"])
+def test_seq_cursors_refuse_non_canonical_digits(payload: str) -> None:
+    """``int()`` takes blanks, signs, underscores and Arabic-Indic digits; a cursor may not."""
+    _rejected_with_invalid_cursor(decode_seq_cursor, _envelope(payload))
+
+
+@pytest.mark.parametrize("payload", ["<\u0662\u0666", "<+26", "< 26", "<2_6", "<-", "<"])
+def test_desc_seq_cursors_refuse_non_canonical_digits(payload: str) -> None:
+    _rejected_with_invalid_cursor(decode_desc_seq_cursor, _envelope(payload))
+
+
+def test_canonical_negative_payloads_still_decode() -> None:
+    assert decode_seq_cursor(encode_seq_cursor(-5)) == -5
+    assert decode_desc_seq_cursor(encode_desc_seq_cursor(-5)) == -5
 
 
 def test_desc_seq_cursor_honours_maximum() -> None:

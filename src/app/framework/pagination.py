@@ -4,9 +4,9 @@ Collections are paginated by an *opaque* cursor. A caller treats it as
 meaningless text and simply echoes ``meta.next_cursor`` back on the next
 request; internally it is a base64url envelope around one keyset position.
 
-**Two typed codecs, because there are two keysets** (6.3-أ). 02 §2 defines the
+**Typed codecs, because there are two keysets** (6.3-أ). 02 §2 defines the
 general case — a keyset on the UUIDv7 ``id`` — and every repository but one
-uses it. ``list_messages`` keysets on ``seq`` instead, deliberately (§3.55:
+uses it (one codec pair). ``list_messages`` keysets on ``seq`` instead, deliberately (§3.55:
 ``seq`` IS a conversation's canonical order and ``uq_msg_seq`` makes it
 index-backed). Until 6.3 both rode through a single ``encode_cursor(last_id:
 Uuid)`` with the seq stringified at the call site, and mypy could not object
@@ -75,6 +75,9 @@ _URLSAFE = b"-_"
 # ASCII hex in the canonical 8-4-4-4-12 form and nothing else: ``uuid.UUID()`` also takes
 # underscores, signs, blanks and non-ASCII digits, which the database driver then refuses.
 _UUID_TEXT = re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+# A canonical ordinal: ASCII digits with an optional minus. ``int()`` alone also takes blanks,
+# ``+``, underscores and non-ASCII digits, so ``"<٤٢"`` would otherwise decode to 42.
+_SEQ_TEXT = re.compile(r"-?[0-9]+")
 
 
 #: The backward ``seq`` codec's payload prefix (gap th-5). Never a digit, a sign or
@@ -144,10 +147,9 @@ def decode_desc_seq_cursor(cursor: str, *, maximum: int | None = None) -> int:
 
 def _seq_value(raw: str, maximum: int | None) -> int:
     """The ordinal a ``seq`` payload carries, bounded to ``maximum`` in magnitude."""
-    try:
-        value = int(raw)
-    except ValueError:
+    if _SEQ_TEXT.fullmatch(raw) is None:
         _reject()
+    value = int(raw)
     if maximum is not None and abs(value) > maximum:
         _reject()
     return value
@@ -168,9 +170,9 @@ def _decode(cursor: str) -> str:
     says what it said is worse than one that is rejected: the client pages
     from somewhere it never asked for, and nothing anywhere reports a fault.
 
-    No guard against an empty payload: both typed callers reject one on their
-    own terms (``""`` is neither a UUID nor an int), so a check here would be
-    a layer that reads as load-bearing while being unreachable — precisely
+    No guard against an empty payload: every typed decoder (id, forward seq,
+    backward seq) rejects one on its own terms (``""`` is neither a UUID nor an int), so a check
+    here would be a layer that reads as load-bearing while being unreachable — precisely
     what a mutation survives (the §3.69-و lesson, and this one WAS a survivor
     before it was deleted).
     """
