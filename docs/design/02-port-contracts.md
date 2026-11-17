@@ -575,6 +575,11 @@ class ReadableFile(Protocol):
     def space_id(self) -> str | None: ...
 class ReadableFiles(Protocol):
     async def get_readable(self, ctx, file_id: Uuid) -> ReadableFile | None: ...
+    async def names_for_files(self, ctx, file_ids: Sequence[Uuid]) -> Mapping[Uuid, str]: ...  # ث‑7
+# `names_for_files` هي نفسها التي في `FilesQuery` (أعلاه)، ويربطها جذر التركيب بالنسخة نفسها. تسأل بها
+# المحادثة أيّ تثبيتاتها ما زال ملفّه حيّاً (`ready` وغير محذوف)، بقراءةٍ واحدة لكلّ قائمة ولكلّ تحضير دور،
+# ولا تُستدعى لخيطٍ بلا تثبيت. الحضور وحده هو الجواب، والاسم لا يُقرأ. وفشلها خطأ `common.internal`،
+# لا «لا تثبيتات»، لأنّ «لا تثبيتات» نطاقٌ شامل.
 # قاعدة التكامل التي فرضها بقاء التثبيت: **الملفّ المثبَّت في وحدة المحادثة نفسها**،
 # والمقارنة `!=` بسيطةٌ عمداً — `None` في الطرفين يمرّ (الحالة القائمة قبل الصفّ ٨‑ب)،
 # وبعده تختفي الحالة وحدها بلا تعديل سطر. والرفض `409 spaces.cross_space_pin` لا `422`:
