@@ -6,7 +6,7 @@
 - **المشروع/المستودعات:** `/home/AIZZAK` (الخلفية فقط). مستودع Android لا يُمس (فيه تعديلات غير محفوظة لا تخص هذه الميزة).
 - **الـ Issue:** لا يوجد. المصدر `docs/delivery/data-search-android/gaps.md` §ث‑5.
 - **الفروع:** `feat/data-search-history-cursor` من `master` على `5d54b15`.
-- **آخر تحديث:** 2026‑11‑17 (بعد التصميم، بدء الخلفية)
+- **آخر تحديث:** 2026‑11‑17 (بعد الخلفية، بدء الجودة)
 
 | # | المرحلة | الوكيل | الحالة | المخرج | ملاحظات |
 |---|---|---|---|---|---|
@@ -15,9 +15,9 @@
 | 3 | UX | ux-designer | ⏭ | | خلفية فقط، لا واجهة في هذا المستودع |
 | 4 | التصميم | software-architect | ✅ | design.md | لا بنود ⚠️. لا ترحيل. codec جديد `encode/decode_desc_seq_cursor` (البادئة `<`)، والـ cursor الأمامي لا يتغير. إثبات الفهرس بـ EXPLAIN حي في CI (`list_messages_newest_first`). انحرافات صغيرة د‑ت5، د‑ت6 (حذف اختبار قديم يثبّت غياب الحد)، سطر في `06 §4` |
 | 5 | البيانات | data-engineer | ⏭ | | لا تغيير في المخطط (design §4)، الفهرس `uq_msg_seq` يكفي |
-| 6 | الخلفية | backend-developer | 🟡 | فرع + commits | |
+| 6 | الخلفية | backend-developer | ✅ | `ebc2785`، `220752f`، `6627b00` | البوابات 1–5 خضراء. أعادها المنسّق: 9210 passed، 37 skipped، exit 0، و`test-rules.sh` OK (31 قاعدة). الحي (AC‑5.2، 5.4 وأجزاء من 1.5، 2.1، 4.2، 4.4) مكتوب ويُجمع بلا خطأ، ويُشغَّل في CI. انحرافات: قيم AC‑2.4 صُحّحت (الصفحة 2 = 25..5 بلا 15)، اختبار إضافي، اختبار وحدة يستورد مساعداً من ملف integration. تعديل `gaps.md` مؤجل لما بعد CI |
 | 7 | الواجهة | frontend-developer | ⏭ | | لا واجهة في هذا المستودع |
-| 8 | الجودة | qa-engineer | ⏸ | test-plan.md + اختبارات | |
+| 8 | الجودة | qa-engineer | 🟡 | test-plan.md + اختبارات | |
 | 9 | مراجعة الشيفرة | code-reviewer | ⏸ | review.md | |
 | 10 | المراجعة الأمنية | security-reviewer | ⏸ | security-review.md | |
 | 11 | القبول | product-owner | ⏸ | acceptance.md | |
