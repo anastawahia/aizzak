@@ -3692,7 +3692,10 @@ async def test_no_ledger_without_a_conversations_seam() -> None:
 # ث-7 -- a pin on a deleted file (data-search-deleted-pins)                    #
 # --------------------------------------------------------------------------- #
 _T7_OTHER = "018f0000-0000-7000-8000-0000000000ot"
-_T7_APOLOGY = "I don't have enough information in the workspace documents to answer that."
+_T7_APOLOGY = (
+    "I don't have enough information in the workspace documents to answer that."
+    "\n\nThere are no files in this space yet."
+)
 
 
 class _T7LLM(_FakeLLM):
