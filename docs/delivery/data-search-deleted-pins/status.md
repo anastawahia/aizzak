@@ -6,7 +6,7 @@
 - **المشروع/المستودعات:** `/home/AIZZAK` (الخلفية فقط). مستودع Android لا يُمس (فيه تعديلات غير محفوظة لا تخص هذه الميزة).
 - **الـ Issue:** لا يوجد. المصدر `docs/delivery/data-search-android/gaps.md` §ث‑7.
 - **الفروع:** `feat/data-search-deleted-pins` من `master` على `137874c`.
-- **آخر تحديث:** 2026‑11‑17 (التصميم، بدء الخلفية)
+- **آخر تحديث:** 2026‑11‑17 (الجودة، بدء المراجعتين)
 
 | # | المرحلة | الوكيل | الحالة | المخرج | ملاحظات |
 |---|---|---|---|---|---|
@@ -15,11 +15,11 @@
 | 3 | UX | ux-designer | ⏭ | | خلفية فقط، لا واجهة في هذا المستودع |
 | 4 | التصميم | software-architect | ✅ | design.md | لا بنود ⚠️. لا ترحيل. منفذ `ReadableFiles.names_for_files` يحققه `FilesQueryService` بنيوياً، ومساعد `_live_pins` في `use_cases.py`، و`ListConversationFiles(repository, files)`. انحرافات صغيرة د‑ت3، د‑ت4 (تحويل `NotFoundError` إلى `common.internal`)، د‑ت7، د‑ت8، د‑ت9 |
 | 5 | البيانات | data-engineer | ⏭ | | لا تغيير في المخطط (design §4، س‑2) |
-| 6 | الخلفية | backend-developer | 🟡 | فرع + commits | |
+| 6 | الخلفية | backend-developer | ✅ | `3210272`، `7826979`، `ebaaf8c`، `6efe195`، `21f739a`، `ec0c233` | البوابات 1–6 خضراء (9295 passed، 37 skipped، exit 0؛ `test-rules.sh` OK، 31 قاعدة). أعاد المنسّق البوابات 1–4 وpytest. الاختبار الحي `test_deleted_pins_live.py` (5 اختبارات) يُجمع بلا خطأ ويُشغَّل في CI. لا تغيير في `migrations` ولا `files` ولا `file_deletion.py` ولا `agents` ولا `.importlinter`. ملاحظات: AC‑2.2 و2.6 تُفحص بنص الاعتذار الثابت (لا مفتاح `fallback`)؛ mypy على الملف الحي وحده يشتكي (البوابة `mypy src` خضراء)؛ `gaps.md` مؤجل لما بعد CI |
 | 7 | الواجهة | frontend-developer | ⏭ | | لا واجهة في هذا المستودع |
-| 8 | الجودة | qa-engineer | ⏸ | test-plan.md + اختبارات | |
-| 9 | مراجعة الشيفرة | code-reviewer | ⏸ | review.md | |
-| 10 | المراجعة الأمنية | security-reviewer | ⏸ | security-review.md | |
+| 8 | الجودة | qa-engineer | ✅ | test-plan.md، `8765827`، `d38446f` | PASS، لا أخطاء. 13 حالة جديدة (حد 49/50/51 مع الأيتام، حارس `NotFoundError`، فكّ التثبيت المتكرر، سياق المساحة). 5 طفرات على `_live_pins` قُتلت كلها. 35/35 مغطاة: 27 وحدة محلياً، 6 مراجعة أو بوابة، 2 حي في CI فقط (AC‑3.4، 5.3)، AC‑6.3 مؤجل. البوابات 1–6 خضراء (9308 passed، 37 skipped، exit 0) |
+| 9 | مراجعة الشيفرة | code-reviewer | 🟡 | review.md | |
+| 10 | المراجعة الأمنية | security-reviewer | 🟡 | security-review.md | |
 | 11 | القبول | product-owner | ⏸ | acceptance.md | |
 | 12 | بوابة ② الدمج | بشري | ⏸ | رابط PR | |
 | 13 | staging | devops-engineer | ⏭ | | لا يوجد هدف staging (CLAUDE.md) |
