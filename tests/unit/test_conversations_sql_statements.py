@@ -15,12 +15,17 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from sqlalchemy import Uuid
+from sqlalchemy import Uuid, select
 from sqlalchemy.dialects.postgresql import asyncpg
 from sqlalchemy.exc import ResourceClosedError
 
 from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import ValidationError
+from app.framework.pagination import (
+    encode_desc_seq_cursor,
+    encode_id_cursor,
+    encode_seq_cursor,
+)
 from app.modules.conversations.adapters import sql_repository
 from app.modules.conversations.adapters.sql_repository import (
     SqlConversationRepository,
@@ -37,6 +42,7 @@ from app.modules.conversations.domain.value_objects import (
     Citation,
     MessageContent,
     MessageFallback,
+    MessageOrder,
     MessageRole,
     MessageStatus,
 )
@@ -538,3 +544,142 @@ async def test_a_plain_append_never_fetches_from_the_insert_result() -> None:
     await _repository(statements).append_message(_ctx(), _message(None))
 
     assert len(statements) == 2
+
+
+# --------------------------------------------------------------------------- #
+# th-5: list_messages reads both ways                                         #
+# --------------------------------------------------------------------------- #
+def _master_forward_statement(limit: int, after_seq: int | None) -> Any:
+    """The statement ``master`` built before th-5, spelled out independently of the adapter."""
+    conditions = [
+        messages.c.conversation_id == _CONVERSATION,
+        messages.c.workspace_id == _WS,
+        messages.c.deleted_at.is_(None),
+    ]
+    if after_seq is not None:
+        conditions.append(messages.c.seq > after_seq)
+    return select(messages).where(*conditions).order_by(messages.c.seq).limit(limit + 1)
+
+
+@pytest.mark.parametrize("after_seq", [None, 20])
+async def test_list_messages_forward_sql_is_unchanged(after_seq: int | None) -> None:
+    statements: list[Any] = []
+    cursor = None if after_seq is None else encode_seq_cursor(after_seq)
+
+    await _repository(statements, rows=[]).list_messages(
+        _ctx(), _CONVERSATION, limit=20, cursor=cursor
+    )
+
+    assert len(statements) == 1
+    expected = _master_forward_statement(20, after_seq)
+    assert _sql(statements[0]) == _sql(expected)
+    assert statements[0].compile(dialect=_PG).params == expected.compile(dialect=_PG).params
+    assert "DESC" not in _sql(statements[0])
+
+
+@pytest.mark.parametrize("after_seq", [None, 20])
+async def test_an_explicit_asc_order_is_the_forward_statement(after_seq: int | None) -> None:
+    statements: list[Any] = []
+    cursor = None if after_seq is None else encode_seq_cursor(after_seq)
+
+    await _repository(statements, rows=[]).list_messages(
+        _ctx(), _CONVERSATION, limit=20, cursor=cursor, order=MessageOrder.ASC
+    )
+
+    assert _sql(statements[0]) == _sql(_master_forward_statement(20, after_seq))
+
+
+@pytest.mark.parametrize("below_seq", [None, 26])
+async def test_list_messages_desc_is_one_select_below_the_cursor_newest_first(
+    below_seq: int | None,
+) -> None:
+    statements: list[Any] = []
+    cursor = None if below_seq is None else encode_desc_seq_cursor(below_seq)
+
+    await _repository(statements, rows=[]).list_messages(
+        _ctx(), _CONVERSATION, limit=20, cursor=cursor, order=MessageOrder.DESC
+    )
+
+    assert len(statements) == 1
+    sql = " ".join(_sql(statements[0]).split())
+    assert "FROM conversations.messages" in sql
+    assert "JOIN" not in sql
+    assert "conversations.messages.conversation_id =" in sql
+    assert "conversations.messages.workspace_id =" in sql
+    assert "conversations.messages.deleted_at IS NULL" in sql
+    assert ("conversations.messages.seq <" in sql) is (below_seq is not None)
+    assert "conversations.messages.seq >" not in sql
+    assert "ORDER BY conversations.messages.seq DESC" in sql
+    params = statements[0].compile(dialect=_PG).params
+    assert 21 in params.values()
+    if below_seq is not None:
+        assert below_seq in params.values()
+
+
+async def test_list_messages_desc_page_cursor_is_a_desc_cursor_of_the_last_row() -> None:
+    statements: list[Any] = []
+    rows = [{**_row(None), "seq": seq} for seq in (5, 4, 3)]
+
+    page = await _repository(statements, rows=rows).list_messages(
+        _ctx(), _CONVERSATION, limit=2, cursor=None, order=MessageOrder.DESC
+    )
+
+    assert [m.seq for m in page.data] == [5, 4]
+    assert page.next_cursor == encode_desc_seq_cursor(4)
+
+
+@pytest.mark.parametrize(
+    ("cursor", "order"),
+    [
+        (encode_desc_seq_cursor(5), MessageOrder.ASC),
+        (encode_seq_cursor(5), MessageOrder.DESC),
+        (encode_id_cursor(_CONVERSATION), MessageOrder.ASC),
+        (encode_id_cursor(_CONVERSATION), MessageOrder.DESC),
+        ("!!!!", MessageOrder.ASC),
+        ("!!!!", MessageOrder.DESC),
+    ],
+)
+async def test_a_cursor_of_the_other_direction_runs_no_statement(
+    cursor: str, order: MessageOrder
+) -> None:
+    statements: list[Any] = []
+
+    with pytest.raises(ValidationError) as raised:
+        await _repository(statements, rows=[]).list_messages(
+            _ctx(), _CONVERSATION, limit=20, cursor=cursor, order=order
+        )
+
+    assert raised.value.code == "common.invalid_cursor"
+    assert statements == []
+
+
+@pytest.mark.parametrize("seq", [2**31, -(2**31), 2**63])
+@pytest.mark.parametrize("order", list(MessageOrder))
+async def test_a_seq_past_int4_runs_no_statement_in_either_direction(
+    seq: int, order: MessageOrder
+) -> None:
+    statements: list[Any] = []
+    cursor = encode_desc_seq_cursor(seq) if order is MessageOrder.DESC else encode_seq_cursor(seq)
+
+    with pytest.raises(ValidationError) as raised:
+        await _repository(statements, rows=[]).list_messages(
+            _ctx(), _CONVERSATION, limit=20, cursor=cursor, order=order
+        )
+
+    assert raised.value.code == "common.invalid_cursor"
+    assert statements == []
+
+
+@pytest.mark.parametrize("seq", [2**31 - 1, 0, -(2**31 - 1)])
+@pytest.mark.parametrize("order", list(MessageOrder))
+async def test_int4_edges_reach_the_database_in_either_direction(
+    seq: int, order: MessageOrder
+) -> None:
+    statements: list[Any] = []
+    cursor = encode_desc_seq_cursor(seq) if order is MessageOrder.DESC else encode_seq_cursor(seq)
+
+    await _repository(statements, rows=[]).list_messages(
+        _ctx(), _CONVERSATION, limit=20, cursor=cursor, order=order
+    )
+
+    assert len(statements) == 1

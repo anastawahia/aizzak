@@ -43,6 +43,7 @@ from app.modules.conversations.domain.value_objects import (
     MAX_CITATIONS,
     AgentKey,
     ConversationKind,
+    MessageOrder,
 )
 from app.modules.conversations.ports.inbound import CitationRef, FallbackRef
 from tests.unit.support_conversations import (
@@ -74,6 +75,9 @@ class _FakeConversations:
         # (conversation_id, limit, cursor) per `list_messages` call — lets a
         # test assert the paging arguments are forwarded, not re-derived.
         self.list_messages_calls: list[tuple[str, int, str | None]] = []
+        # The direction of each `list_messages` call, kept apart so the tuple above
+        # (and the test that pins it) does not change (th-5).
+        self.list_messages_orders: list[MessageOrder] = []
         # Message ids handed to `save_message`, in order — the delete's
         # idempotent path is defined by still reaching the repository, which
         # is not observable from the returned entity alone.
@@ -155,12 +159,19 @@ class _FakeConversations:
         self.pins[conversation_id] = [pin for pin in stored if pin.file_id != file_id]
 
     async def list_messages(
-        self, ctx: ExecutionContext, conversation_id: str, *, limit: int, cursor: str | None
+        self,
+        ctx: ExecutionContext,
+        conversation_id: str,
+        *,
+        limit: int,
+        cursor: str | None,
+        order: MessageOrder = MessageOrder.ASC,
     ) -> Page[Message]:
         # Soft-deleted messages are excluded from retrieval (INV-CV3); the
         # keyset itself is the SQL adapter's job, tested live in
         # `tests/integration/test_conversations_repository_rls.py`.
         self.list_messages_calls.append((conversation_id, limit, cursor))
+        self.list_messages_orders.append(order)
         visible = [m for m in self.messages.get(conversation_id, []) if m.deleted_at is None]
         return Page(data=visible[:limit], next_cursor=None, limit=limit)
 
@@ -566,6 +577,35 @@ async def test_list_messages_returns_thread_and_forwards_paging_arguments() -> N
     assert [m.seq for m in page.data] == [1, 2]
     assert [m.content.text for m in page.data] == ["one", "two"]
     assert conversations.list_messages_calls == [(conversation.id, 5, "opaque")]
+
+
+async def test_list_messages_forwards_the_order_and_defaults_to_ascending() -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+    use_case = ListMessages(conversations)
+
+    await use_case.execute(_ctx(), conversation.id, limit=5)
+    await use_case.execute(_ctx(), conversation.id, limit=5, order=MessageOrder.ASC)
+    await use_case.execute(_ctx(), conversation.id, limit=5, order=MessageOrder.DESC)
+
+    assert conversations.list_messages_orders == [
+        MessageOrder.ASC,
+        MessageOrder.ASC,
+        MessageOrder.DESC,
+    ]
+
+
+async def test_list_messages_desc_on_a_missing_or_deleted_thread_never_reads_messages() -> None:
+    conversations = _FakeConversations()
+    deleted = await _seed_conversation(conversations, deleted_at=utc_now())
+    use_case = ListMessages(conversations)
+
+    with pytest.raises(NotFoundError):
+        await use_case.execute(_ctx(), "missing", limit=5, order=MessageOrder.DESC)
+    with pytest.raises(NotFoundError):
+        await use_case.execute(_ctx(), deleted.id, limit=5, order=MessageOrder.DESC)
+
+    assert conversations.list_messages_calls == []
 
 
 async def test_list_messages_excludes_soft_deleted_messages() -> None:

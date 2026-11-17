@@ -48,6 +48,7 @@ from app.modules.conversations.domain.value_objects import (
     ConversationKind,
     MessageContent,
     MessageFallback,
+    MessageOrder,
     MessageRole,
     MessageStatus,
 )
@@ -388,7 +389,8 @@ class GetConversation:
 
 
 class ListMessages:
-    """List one conversation's messages in ``seq`` order (INV-CV1).
+    """List one conversation's messages by ``seq`` (INV-CV1), oldest first or newest first
+    (``order``, gap th-5).
 
     **Why it reads the conversation first.** Handing the repository an id it
     has never seen returns an empty page, which on the wire is
@@ -414,12 +416,13 @@ class ListMessages:
         *,
         limit: int,
         cursor: str | None = None,
+        order: MessageOrder = MessageOrder.ASC,
     ) -> Page[Message]:
         conversation = await self._conversations.get(ctx, conversation_id)
         if conversation is None or conversation.deleted_at is not None:
             raise NotFoundError("conversation not found")
         return await self._conversations.list_messages(
-            ctx, conversation_id, limit=limit, cursor=cursor
+            ctx, conversation_id, limit=limit, cursor=cursor, order=order
         )
 
 

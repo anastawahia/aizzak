@@ -43,6 +43,7 @@ from app.ops.explain_hot_paths import (
     summarise,
     workspace_from_manifest,
 )
+from tests.integration.test_hot_path_plans_live import _backward_scans
 
 _SRC = Path(__file__).resolve().parents[2] / "src" / "app"
 
@@ -543,3 +544,39 @@ def test_probes_report_what_they_could_not_read() -> None:
     assert probes.missing(("space_id", "file_ids", "point_ids")) == ["space_id", "file_ids"]
     assert probes.binding("point_ids") == ("a8125322-74ca-50b3-8e1b-797e4a1c7e89",)
     assert probes.binding("file_ids") is None
+
+
+def test_the_backward_scan_reader_reads_a_canned_plan() -> None:
+    """The live ``th-5`` test's plan reader, on a hand-written plan, so its polarity is checked
+    without a database: a backward index scan is reported with its direction, a forward one
+    is not mistaken for it, and a seq scan reports no index at all."""
+    backward = {
+        "Plan": {
+            "Node Type": "Limit",
+            "Plans": [
+                {
+                    "Node Type": "Index Scan",
+                    "Index Name": "uq_msg_seq",
+                    "Scan Direction": "Backward",
+                }
+            ],
+        }
+    }
+    forward = {
+        "Plan": {
+            "Node Type": "Limit",
+            "Plans": [
+                {"Node Type": "Index Scan", "Index Name": "uq_msg_seq", "Scan Direction": "Forward"}
+            ],
+        }
+    }
+    sorted_seq = {
+        "Plan": {
+            "Node Type": "Sort",
+            "Plans": [{"Node Type": "Seq Scan", "Relation Name": "messages"}],
+        }
+    }
+
+    assert _backward_scans(backward) == {("Index Scan", "uq_msg_seq", "Backward")}
+    assert _backward_scans(forward) == {("Index Scan", "uq_msg_seq", "Forward")}
+    assert _backward_scans(sorted_seq) == set()

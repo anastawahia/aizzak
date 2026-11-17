@@ -93,6 +93,7 @@ VO  MessageContent   (نص + مرفقات اختيارية: قائمة file_id �
 VO  Citation         (document_id, file_name, page, chunk_id, rank) — لقطة مصدر جواب المساعد (ث‑1)
 VO  MessageStatus    (complete | partial) — كيف انتهى الدور الذي كتب رسالة المساعد (ث‑2)
 VO  MessageFallback  (from_provider, from_model, to_provider, to_model) — تحوّل 6.4 الذي أُجيب تحته (ث‑2)
+VO  MessageOrder     (asc | desc) — اتجاه قراءة السجل بـ`seq` في `list_messages`؛ قراءةٌ فقط، لا تمسّ الـaggregate (ث‑5)
 EV  ConversationStarted(conversation_id, workspace_id, agent_key, kind, occurred_at)
 EV  MessageAppended(message_id, conversation_id, role, seq, occurred_at)
 ```

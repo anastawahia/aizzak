@@ -327,6 +327,39 @@ def test_the_idempotency_header_is_declared_on_exactly_the_contracts_operations(
     )
 
 
+def test_the_order_parameter_is_declared_on_list_messages_alone() -> None:
+    """th-5: ``order`` is ``listMessages``'s own parameter, in the served document and in the
+    contract alike, with the same closed values and the same default."""
+    expected = {("/api/v1/conversations/{}/messages", "get")}
+    assert _declaring(LIVE, "order", spec=False) == expected
+    assert _declaring(SPEC, "order", spec=True) == expected
+
+    for doc, is_spec in ((LIVE, False), (SPEC, True)):
+        [operation] = [
+            operation
+            for key, operation in _operations(doc, spec=is_spec)
+            if key == next(iter(expected))
+        ]
+        [parameter] = [
+            _resolved(doc, p)
+            for p in operation["parameters"]
+            if _resolved(doc, p)["name"] == "order"
+        ]
+        assert parameter["in"] == "query"
+        assert parameter["schema"]["enum"] == ["asc", "desc"]
+        assert parameter["schema"]["default"] == "asc"
+        assert not parameter.get("required", False)
+
+
+def _resolved(doc: dict[str, Any], declared: dict[str, Any]) -> dict[str, Any]:
+    if "$ref" not in declared:
+        return declared
+    resolved: dict[str, Any] = doc["components"]["parameters"][
+        str(declared["$ref"]).rsplit("/")[-1]
+    ]
+    return resolved
+
+
 def test_every_query_and_path_parameter_name_is_snake_case() -> None:
     """API-02's ``snake_case`` rule covers what this platform NAMES — JSON
     properties, query strings, path segments.

@@ -22,8 +22,9 @@ INV-CV3). ``get`` returns a soft-deleted conversation as-is (no
 rejects further mutation on it, not the adapter (``AppendMessage``/
 ``RenameConversation`` both ``get`` first and let the aggregate raise).
 
-``list_messages`` reads that same child table back in ``seq`` order and
-DOES filter ``deleted_at IS NULL``: a soft-deleted message is excluded from
+``list_messages`` reads that same child table back by ``seq`` -- oldest first by
+default, newest first with ``MessageOrder.DESC`` (gap th-5) -- and DOES filter
+``deleted_at IS NULL`` in both directions: a soft-deleted message is excluded from
 retrieval while its ``seq`` stays reserved (INV-CV3), so a page may show a
 gap — that is the invariant working, not a defect. Its keyset runs on
 ``seq`` rather than ``id`` (the ``list_by_agent`` choice): ``seq`` IS the
@@ -32,7 +33,11 @@ conversation's canonical order, it is unique per conversation, and
 index-backed. Its codec is ``encode_seq_cursor``/``decode_seq_cursor``
 (``framework/pagination.py``, 6.3-أ) — a SECOND, typed pair beside the ``id``
 one, so the keyset a cursor belongs to is visible in the call rather than
-hidden behind a stringified int.
+hidden behind a stringified int. The backward direction has its own codec,
+``encode_desc_seq_cursor``/``decode_desc_seq_cursor``, whose tag makes a cursor
+unspendable in the other direction, and both decoders are bounded to the ``int4`` column
+(``_INT4_MAX``), so an out-of-range position is a 422 before any statement, as in
+``electrical``.
 
 ``get_message``/``save_message`` (BE-RAG-004) are that child's write path.
 ``get_message`` filters on the CONVERSATION id as well as the message id, so
@@ -60,6 +65,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime
+from typing import Final
 
 from sqlalchemy import (
     Column,
@@ -91,8 +97,10 @@ from app.framework.context.execution_context import ExecutionContext
 from app.framework.errors import AppError, ConflictError, ValidationError
 from app.framework.pagination import (
     Page,
+    decode_desc_seq_cursor,
     decode_id_cursor,
     decode_seq_cursor,
+    encode_desc_seq_cursor,
     encode_id_cursor,
     encode_seq_cursor,
 )
@@ -105,9 +113,12 @@ from app.modules.conversations.domain.value_objects import (
     ConversationKind,
     MessageContent,
     MessageFallback,
+    MessageOrder,
     MessageRole,
     MessageStatus,
 )
+
+_INT4_MAX: Final = 2**31 - 1  # messages.seq is an int4 (0001_conversations)
 
 _metadata = MetaData()
 
@@ -454,24 +465,45 @@ class SqlConversationRepository:
             raise ConflictError(f"message {message.id} disappeared before it could be deleted")
 
     async def list_messages(
-        self, ctx: ExecutionContext, conversation_id: UuidStr, *, limit: int, cursor: str | None
+        self,
+        ctx: ExecutionContext,
+        conversation_id: UuidStr,
+        *,
+        limit: int,
+        cursor: str | None,
+        order: MessageOrder = MessageOrder.ASC,
     ) -> Page[Message]:
         # Soft-deleted messages are excluded from retrieval (INV-CV3); their
-        # `seq` stays reserved, so a page can legitimately show a gap.
+        # `seq` stays reserved, so a page can legitimately show a gap -- in
+        # either direction.
+        backward = order is MessageOrder.DESC
         conditions = [
             messages.c.conversation_id == conversation_id,
             messages.c.workspace_id == ctx.workspace_id,
             messages.c.deleted_at.is_(None),
         ]
+        # Decoded BEFORE the session opens: a refused cursor runs no statement.
+        # The predicate and the ORDER BY point the same way (6.3-b), per branch.
         if cursor is not None:
-            conditions.append(messages.c.seq > decode_seq_cursor(cursor))
-        stmt = select(messages).where(*conditions).order_by(messages.c.seq).limit(limit + 1)
+            if backward:
+                conditions.append(
+                    messages.c.seq < decode_desc_seq_cursor(cursor, maximum=_INT4_MAX)
+                )
+            else:
+                conditions.append(messages.c.seq > decode_seq_cursor(cursor, maximum=_INT4_MAX))
+        ordering = messages.c.seq.desc() if backward else messages.c.seq
+        stmt = select(messages).where(*conditions).order_by(ordering).limit(limit + 1)
         try:
             async with self._tenant_session(ctx) as session:
                 rows = (await session.execute(stmt)).mappings().all()
         except DBAPIError as exc:
             raise _translate(exc) from exc
-        return _paginate(rows, limit, _hydrate_message, next_cursor_of=_seq_cursor_of)
+        return _paginate(
+            rows,
+            limit,
+            _hydrate_message,
+            next_cursor_of=_desc_seq_cursor_of if backward else _seq_cursor_of,
+        )
 
     async def list_files(self, ctx: ExecutionContext, conversation_id: UuidStr) -> list[PinnedFile]:
         # Ordered by `created_at` so the UI shows pins in the order they were
@@ -728,6 +760,10 @@ def _id_cursor_of(row: RowMapping) -> str:
 
 def _seq_cursor_of(row: RowMapping) -> str:
     return encode_seq_cursor(row["seq"])
+
+
+def _desc_seq_cursor_of(row: RowMapping) -> str:
+    return encode_desc_seq_cursor(row["seq"])
 
 
 def _paginate[T](

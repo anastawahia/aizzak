@@ -10,7 +10,8 @@ Twelve routes, each a thin delegate:
 * ``PUT /conversations/{id}/model`` — pin (or unpin) the configured model
   route that answers this thread;
 * ``DELETE /conversations/{id}`` — soft-delete (204, idempotent);
-* ``GET /conversations/{id}/messages`` — the thread's turns, paginated;
+* ``GET /conversations/{id}/messages`` — the thread's turns, paginated, oldest first or
+  newest first (``order``);
 * ``POST /conversations/{id}/messages`` — post a turn and RUN the thread's
   agent on it, answering as SSE or as the persisted reply;
 * ``DELETE /conversations/{id}/messages/{message_id}`` — soft-delete one turn
@@ -40,9 +41,9 @@ persistence path shared with ``POST /agents/{key}/invoke``.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from starlette.responses import StreamingResponse
 
 from app.api.middleware.rbac import require
@@ -75,6 +76,7 @@ from app.framework.context.execution_context import ExecutionContext
 from app.modules.access.domain.value_objects import Permission
 from app.modules.conversations.domain.entities import Conversation, Message, PinnedFile
 from app.modules.conversations.domain.value_objects import MessageFallback as DomainFallback
+from app.modules.conversations.domain.value_objects import MessageOrder
 from app.modules.conversations.ports.inbound import AppendedMessage, FallbackRef
 
 # The router-level bearer gate is BELT AND BRACES here, and knowingly so: every
@@ -352,10 +354,12 @@ async def list_messages(
     conversation_id: str,
     limit: Limit = DEFAULT_LIMIT,
     cursor: Cursor = None,
+    order: Annotated[Literal["asc", "desc"], Query()] = "asc",
 ) -> Page[MessageOut]:
-    """The thread's turns in ``seq`` order, soft-deleted ones excluded."""
+    """The thread's turns, soft-deleted ones excluded: oldest first by ``seq``, or newest
+    first with ``order=desc``. A cursor is spent in the direction that issued it."""
     page = await services.conversations.list_messages.execute(
-        ctx, conversation_id, limit=limit, cursor=cursor
+        ctx, conversation_id, limit=limit, cursor=cursor, order=MessageOrder(order)
     )
     return Page(
         data=[_to_message_out(message) for message in page.data],

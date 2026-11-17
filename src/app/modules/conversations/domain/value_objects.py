@@ -50,6 +50,15 @@ class MessageRole(StrEnum):
     TOOL = "tool"
 
 
+class MessageOrder(StrEnum):
+    """Which way a transcript is read by ``seq`` (gap th-5): ``ASC`` oldest first -- the
+    default, and the only direction before th-5 -- or ``DESC`` newest first. A read
+    concern only: it never touches the aggregate or INV-CV1."""
+
+    ASC = "asc"
+    DESC = "desc"
+
+
 @dataclass(frozen=True, slots=True)
 class AgentKey:
     """The agent (or workflow) slug a conversation is threaded under.

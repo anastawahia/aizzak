@@ -335,7 +335,12 @@ async def owner_conn(live_db: LiveDbDsns) -> AsyncIterator[AsyncConnection]:
 
 
 async def _explain(
-    conn: AsyncConnection, name: str, volume: Mapping[str, Any], *, drop: tuple[str, str] | None
+    conn: AsyncConnection,
+    name: str,
+    volume: Mapping[str, Any],
+    *,
+    drop: tuple[str, str] | None,
+    drop_constraint: tuple[str, str, str] | None = None,
 ) -> dict[str, Any]:
     """One catalogue entry's plan, in a transaction that is ALWAYS rolled back.
 
@@ -353,6 +358,10 @@ async def _explain(
         if drop is not None:
             schema, index = drop
             await conn.execute(text(f"DROP INDEX {schema}.{index}"))
+        if drop_constraint is not None:
+            schema, table, constraint = drop_constraint
+            # A constraint's index cannot be DROP INDEXed; the constraint goes instead.
+            await conn.execute(text(f"ALTER TABLE {schema}.{table} DROP CONSTRAINT {constraint}"))
         raw = await conn.scalar(
             text(f"EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) {entry.sql}"), bindings
         )
@@ -498,3 +507,170 @@ async def test_the_plan_is_taken_under_the_row_security_qual(
     assert "current_setting" in rendered, (
         f"{name}: no row-security qual in the plan -- this was not measured under RLS"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 4. th-5: the transcript read newest first walks uq_msg_seq BACKWARD          #
+# --------------------------------------------------------------------------- #
+
+_TRANSCRIPT = "conversations.list_messages_newest_first"
+_TRANSCRIPT_ROWS = 10_000
+_OTHER_TRANSCRIPT_ROWS = 2_000
+_TRANSCRIPT_DELETED = 5
+_TRANSCRIPT_DROP = ("conversations", "messages", "uq_msg_seq")
+
+
+def _backward_scans(explained: Mapping[str, Any]) -> set[tuple[str, str, str]]:
+    """``(node type, index name, scan direction)`` for every index scan in the plan."""
+    found: set[tuple[str, str, str]] = set()
+
+    def walk(node: Mapping[str, Any]) -> None:
+        if "Index Name" in node:
+            found.add(
+                (
+                    str(node["Node Type"]),
+                    str(node["Index Name"]),
+                    str(node.get("Scan Direction", "")),
+                )
+            )
+        for child in node.get("Plans", ()) or ():
+            walk(child)
+
+    walk(explained["Plan"])
+    return found
+
+
+@pytest.fixture
+def seeded_transcript(live_db: LiveDbDsns) -> Iterator[dict[str, Any]]:
+    """One workspace, a 10,000-message thread whose newest 5 are soft-deleted, and a second
+    2,000-message thread beside it so the leading column of the index means something."""
+    volume: dict[str, Any] = {
+        "workspace_id": new_uuid7(),
+        "conversation_id": new_uuid7(),
+        "other_conversation_id": new_uuid7(),
+    }
+    asyncio.run(_write_transcript(live_db, volume))
+    yield volume
+
+
+async def _write_transcript(live_db: LiveDbDsns, volume: dict[str, Any]) -> None:
+    app_engine = create_engine(DatabaseSettings(url=live_db.app), poolclass=NullPool)
+    try:
+        async with app_engine.connect() as conn, conn.begin():
+            await _set_tenant(conn, volume["workspace_id"])
+            for conversation_id in (volume["conversation_id"], volume["other_conversation_id"]):
+                await conn.execute(
+                    text(
+                        "INSERT INTO conversations.conversations "
+                        "(id, workspace_id, agent_key) VALUES (:id, :ws, 'rag')"
+                    ),
+                    {"id": conversation_id, "ws": volume["workspace_id"]},
+                )
+            rows = [
+                {
+                    "id": new_uuid7(),
+                    "conv": volume["conversation_id"],
+                    "ws": volume["workspace_id"],
+                    "seq": seq,
+                    "deleted": seq > _TRANSCRIPT_ROWS - _TRANSCRIPT_DELETED,
+                }
+                for seq in range(1, _TRANSCRIPT_ROWS + 1)
+            ] + [
+                {
+                    "id": new_uuid7(),
+                    "conv": volume["other_conversation_id"],
+                    "ws": volume["workspace_id"],
+                    "seq": seq,
+                    "deleted": False,
+                }
+                for seq in range(1, _OTHER_TRANSCRIPT_ROWS + 1)
+            ]
+            await conn.execute(
+                text(
+                    "INSERT INTO conversations.messages "
+                    "(id, conversation_id, workspace_id, role, content, seq, deleted_at) "
+                    "VALUES (:id, :conv, :ws, 'user', CAST('{\"text\": \"m\"}' AS jsonb), :seq, "
+                    "CASE WHEN :deleted THEN now() ELSE NULL END)"
+                ),
+                rows,
+            )
+    finally:
+        await app_engine.dispose()
+
+    owner_engine = create_engine(DatabaseSettings(url=live_db.owner), poolclass=NullPool)
+    try:
+        async with owner_engine.connect() as conn:
+            vacuuming = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            await vacuuming.execute(
+                text("VACUUM ANALYZE conversations.conversations, conversations.messages")
+            )
+    finally:
+        await owner_engine.dispose()
+
+
+async def test_the_newest_first_transcript_page_scans_uq_msg_seq_backward(
+    app_conn: AsyncConnection, seeded_transcript: dict[str, Any]
+) -> None:
+    explained = await _explain(app_conn, _TRANSCRIPT, seeded_transcript, drop=None)
+    summary = summarise(explained)
+
+    assert ("Index Scan", "uq_msg_seq", "Backward") in _backward_scans(explained)
+    assert "Sort" not in summary.node_types
+    assert "conversations.messages" not in summary.seq_scans
+    assert "current_setting" in json.dumps(explained), "not taken under the row-security qual"
+
+
+async def test_the_newest_first_page_reads_a_page_plus_the_deleted_rows_it_passes(
+    app_conn: AsyncConnection, seeded_transcript: dict[str, Any]
+) -> None:
+    summary = summarise(await _explain(app_conn, _TRANSCRIPT, seeded_transcript, drop=None))
+
+    assert summary.rows_returned == 21
+    assert summary.rows_read <= 21 + _TRANSCRIPT_DELETED, (
+        f"read {summary.rows_read} rows for a page of 21: the cost follows the thread's length"
+    )
+
+
+async def test_without_uq_msg_seq_the_newest_first_page_loses_its_backward_scan(
+    owner_conn: AsyncConnection, seeded_transcript: dict[str, Any]
+) -> None:
+    """The assertion proven able to fail (the constraint, not DROP INDEX: PostgreSQL refuses
+    to drop an index a constraint owns)."""
+    without = await _explain(
+        owner_conn,
+        _TRANSCRIPT,
+        seeded_transcript,
+        drop=None,
+        drop_constraint=_TRANSCRIPT_DROP,
+    )
+    summary = summarise(without)
+
+    assert ("Index Scan", "uq_msg_seq", "Backward") not in _backward_scans(without)
+    assert "Sort" in summary.node_types or "conversations.messages" in summary.seq_scans
+
+
+async def test_the_owner_gets_the_same_transcript_plan_as_app_rw(
+    app_conn: AsyncConnection, owner_conn: AsyncConnection, seeded_transcript: dict[str, Any]
+) -> None:
+    """What licenses the drop assertion above to run as the owner."""
+    as_app = _backward_scans(await _explain(app_conn, _TRANSCRIPT, seeded_transcript, drop=None))
+    as_owner = _backward_scans(
+        await _explain(owner_conn, _TRANSCRIPT, seeded_transcript, drop=None)
+    )
+    assert as_app == as_owner
+
+
+async def test_uq_msg_seq_comes_back_on_rollback(
+    app_conn: AsyncConnection, owner_conn: AsyncConnection, seeded_transcript: dict[str, Any]
+) -> None:
+    await _explain(
+        owner_conn, _TRANSCRIPT, seeded_transcript, drop=None, drop_constraint=_TRANSCRIPT_DROP
+    )
+
+    found = await app_conn.scalar(
+        text(
+            "SELECT conname FROM pg_constraint "
+            "WHERE conname = 'uq_msg_seq' AND conrelid = 'conversations.messages'::regclass"
+        )
+    )
+    assert found == "uq_msg_seq"

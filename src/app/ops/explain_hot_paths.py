@@ -344,6 +344,22 @@ CATALOGUE: tuple[HotPath, ...] = (
         """,
     ),
     HotPath(
+        name="conversations.list_messages_newest_first",
+        kind="page",
+        table="conversations.messages",
+        source="modules/conversations/adapters/sql_repository.py"
+        "::SqlConversationRepository.list_messages",
+        backs="§0 `browse` -- a long thread opened on its latest turns (th-5, `order=desc`)",
+        needs=("workspace_id", "conversation_id"),
+        sql="""
+        SELECT * FROM conversations.messages
+        WHERE conversation_id = :conversation_id
+          AND workspace_id = :workspace_id
+          AND deleted_at IS NULL
+        ORDER BY seq DESC LIMIT :page
+        """,
+    ),
+    HotPath(
         name="conversations.counts_by_space",
         kind="aggregate",
         table="conversations.conversations",
