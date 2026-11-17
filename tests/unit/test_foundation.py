@@ -14,8 +14,10 @@ from app.framework.identifiers import new_uuid7
 from app.framework.observability.logging import JsonFormatter, configure_logging
 from app.framework.observability.redaction import REDACTED, redact
 from app.framework.pagination import (
+    decode_desc_seq_cursor,
     decode_id_cursor,
     decode_seq_cursor,
+    encode_desc_seq_cursor,
     encode_id_cursor,
     encode_seq_cursor,
 )
@@ -52,6 +54,60 @@ def test_id_cursor_round_trips() -> None:
 def test_seq_cursor_round_trips() -> None:
     assert decode_seq_cursor(encode_seq_cursor(0)) == 0
     assert decode_seq_cursor(encode_seq_cursor(4_211)) == 4_211
+
+
+def test_seq_cursor_payload_is_unchanged() -> None:
+    """The forward payload is byte for byte what it was before th-5, so every cursor a
+    client already holds still decodes to the same position."""
+    assert encode_seq_cursor(20) == "MjA"
+    assert encode_seq_cursor(26) == "MjY"
+
+
+@pytest.mark.parametrize("seq", [0, 1, 4_211, 2**31 - 1])
+def test_desc_seq_cursor_round_trips(seq: int) -> None:
+    assert decode_desc_seq_cursor(encode_desc_seq_cursor(seq)) == seq
+
+
+def test_desc_seq_cursor_is_tagged() -> None:
+    assert encode_desc_seq_cursor(26) == "PDI2"
+    assert encode_desc_seq_cursor(20) == "PDIw"
+
+
+def _rejected_with_invalid_cursor(decode: object, cursor: str) -> None:
+    assert callable(decode)
+    with pytest.raises(ValidationError) as exc:
+        decode(cursor)
+    assert exc.value.code == "common.invalid_cursor"
+
+
+def test_seq_cursors_refuse_the_other_direction() -> None:
+    _rejected_with_invalid_cursor(decode_seq_cursor, encode_desc_seq_cursor(26))
+    _rejected_with_invalid_cursor(decode_desc_seq_cursor, encode_seq_cursor(26))
+
+
+@pytest.mark.parametrize(
+    "cursor",
+    [
+        "!!!!",
+        "",
+        encode_id_cursor("0190dddd-0000-7000-8000-000000000001"),
+        "PA",  # "<" alone
+        "PDwyNg",  # "<<26"
+        "PGFiYw",  # "<abc"
+    ],
+)
+def test_decode_desc_seq_cursor_rejects_garbage(cursor: str) -> None:
+    _rejected_with_invalid_cursor(decode_desc_seq_cursor, cursor)
+
+
+def test_desc_seq_cursor_honours_maximum() -> None:
+    limit = 2**31 - 1
+    for rejected in (2**31, -(2**31)):
+        with pytest.raises(ValidationError) as exc:
+            decode_desc_seq_cursor(encode_desc_seq_cursor(rejected), maximum=limit)
+        assert exc.value.code == "common.invalid_cursor"
+    for accepted in (limit, -limit):
+        assert decode_desc_seq_cursor(encode_desc_seq_cursor(accepted), maximum=limit) == accepted
 
 
 def test_a_cursor_is_opaque_and_url_safe() -> None:

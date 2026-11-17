@@ -18,9 +18,20 @@ against another is rejected without any kind marker inside the payload: a
 ``seq`` cursor carries ``"42"``, which ``decode_id_cursor`` refuses because it
 is not a UUID, and an ``id`` cursor carries a UUID, which ``decode_seq_cursor``
 refuses because it is not an integer. A discriminator in the envelope would
-buy a better error message for a case the types already close.
+buy a better error message for a case the types already close. WITHIN one keyset
+the types close nothing, and that is the next paragraph.
 
-**One direction, and it is NEWEST FIRST** (6.3-ب). A keyset cannot exist
+**A ``seq`` cursor carries its direction** (gap th-5). ``list_messages`` reads ``seq``
+both ways, so a forward and a backward cursor share one keyset, and a forward cursor
+replayed backward would decode cleanly into a position that means something else: the
+client asks for older messages and gets newer ones, duplicates and all, with nothing
+anywhere reporting a fault. So the backward codec tags its payload (``"<42"``) and each
+decoder refuses the other's form: ``int("<42")`` fails in ``decode_seq_cursor``, and
+``decode_desc_seq_cursor`` refuses a payload without the tag. The forward payload is
+unchanged byte for byte, so every forward cursor a client already holds still decodes
+to the same position.
+
+**NEWEST FIRST, with one collection that also reads forward** (6.3-ب). A keyset cannot exist
 without a direction, and an API whose collections disagree about theirs makes
 every client guess: before 6.3 the paginated collections read oldest-first
 (``ORDER BY id``, ``id > cursor``) while every unpaginated one documented and
@@ -29,8 +40,11 @@ while ``GET /credentials`` opened on its newest key. Resource listings are
 inboxes — the rows that matter are the recent ones — so a paginated repository
 orders ``id DESC`` and filters ``id < cursor``. The predicate and the ORDER BY
 must point the same way; pointing them apart yields a page that is silently
-empty or endless. The ONE exception is ``list_messages``: a transcript is a
-narrative, not an inbox, so it reads forward by ``seq``.
+empty or endless. The exception is ``list_messages``: a transcript is a
+narrative, not an inbox, so it reads FORWARD by ``seq`` by default (``seq > cursor``,
+``ORDER BY seq``). Since gap th-5 it also reads BACKWARD on request (``order=desc``:
+``seq < cursor``, ``ORDER BY seq DESC``), so a client can open a long thread on its
+latest turns in one request. Each direction obeys the rule above on its own.
 
 **Decoding is TOTAL.** Every malformed input — non-base64 text, an alphabet
 violation, a truncated group, non-UTF-8 bytes, an empty payload, well-formed
@@ -49,7 +63,7 @@ import base64
 import binascii
 import re
 from dataclasses import dataclass
-from typing import NoReturn
+from typing import Final, NoReturn
 
 from app.framework.errors import ValidationError
 from app.framework.types import Uuid
@@ -61,6 +75,12 @@ _URLSAFE = b"-_"
 # ASCII hex in the canonical 8-4-4-4-12 form and nothing else: ``uuid.UUID()`` also takes
 # underscores, signs, blanks and non-ASCII digits, which the database driver then refuses.
 _UUID_TEXT = re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+
+
+#: The backward ``seq`` codec's payload prefix (gap th-5). Never a digit, a sign or
+#: whitespace, so ``int()`` refuses a tagged payload and a forward payload can never
+#: carry it.
+_DESC_TAG: Final = "<"
 
 
 def is_uuid_text(value: object) -> bool:
@@ -106,6 +126,24 @@ def decode_seq_cursor(cursor: str, *, maximum: int | None = None) -> int:
     """Decode a ``seq`` cursor back to its ordinal, or reject it. ``maximum`` bounds the
     magnitude to what the compared column holds (an ``int4`` refuses a larger parameter)."""
     raw = _decode(cursor)
+    return _seq_value(raw, maximum)
+
+
+def encode_desc_seq_cursor(last_seq: int) -> str:
+    """Encode a ``seq`` position for a NEWEST-FIRST read: the next page is ``seq < last_seq``."""
+    return _encode(_DESC_TAG + str(last_seq))
+
+
+def decode_desc_seq_cursor(cursor: str, *, maximum: int | None = None) -> int:
+    """Decode a newest-first ``seq`` cursor, or reject it -- including a forward one."""
+    raw = _decode(cursor)
+    if not raw.startswith(_DESC_TAG):
+        _reject()
+    return _seq_value(raw.removeprefix(_DESC_TAG), maximum)
+
+
+def _seq_value(raw: str, maximum: int | None) -> int:
+    """The ordinal a ``seq`` payload carries, bounded to ``maximum`` in magnitude."""
     try:
         value = int(raw)
     except ValueError:
