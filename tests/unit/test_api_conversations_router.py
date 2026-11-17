@@ -27,6 +27,7 @@ resolved — the whole conversation path is exercised without a provider.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from collections.abc import AsyncIterator
 from typing import Any, ClassVar
@@ -2936,3 +2937,171 @@ def test_a_desc_cursor_at_or_below_the_oldest_is_an_empty_last_page() -> None:
         )
         assert page["data"] == []
         assert page["meta"]["next_cursor"] is None  # type: ignore[index]
+
+
+# --------------------------------------------------------------------------- #
+# ث-5 -- QA edge cases (data-search-history-cursor, qa-engineer)               #
+# --------------------------------------------------------------------------- #
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+@pytest.mark.parametrize("order", ["asc", "desc"])
+def test_qa_an_unknown_thread_is_404_before_a_bad_cursor_is_looked_at(order: str) -> None:
+    """The guard order (design d-t5): the conversation read (404) precedes the cursor (422)."""
+    client, _stack = _desc_app()
+    response = client.get(
+        _PATH.format(new_uuid7()) + f"?order={order}&cursor=!!!!", headers=_auth()
+    )
+    assert response.status_code == 404
+    assert response.json()["code"] == "common.not_found"
+
+
+def test_qa_the_int4_boundary_is_exact_in_both_directions() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 3)
+    path = _PATH.format(conversation_id)
+
+    # 2^31 - 1 is a legal position: 200 (and, for desc, everything is below it).
+    top = client.get(
+        path + f"?order=desc&cursor={encode_desc_seq_cursor(2**31 - 1)}", headers=_auth()
+    )
+    assert top.status_code == 200
+    assert [m["seq"] for m in top.json()["data"]] == [3, 2, 1]
+    fwd = client.get(path + f"?cursor={encode_seq_cursor(2**31 - 1)}", headers=_auth())
+    assert fwd.status_code == 200
+    assert fwd.json()["data"] == []
+
+    for order, mint in (("desc", encode_desc_seq_cursor), ("asc", encode_seq_cursor)):
+        for seq in (2**31, -(2**31), 2**63):
+            response = client.get(path + f"?order={order}&cursor={mint(seq)}", headers=_auth())
+            assert response.status_code == 422, (order, seq)
+            assert response.json()["code"] == "common.invalid_cursor"
+
+    # A negative in-range position is legal: desc finds nothing below it, asc restarts.
+    below = client.get(path + f"?order=desc&cursor={encode_desc_seq_cursor(-5)}", headers=_auth())
+    assert below.status_code == 200 and below.json()["data"] == []
+    restart = client.get(path + f"?cursor={encode_seq_cursor(-5)}", headers=_auth())
+    assert [m["seq"] for m in restart.json()["data"]] == [1, 2, 3]
+
+
+@pytest.mark.parametrize(
+    "cursor",
+    [
+        "%%%",
+        "PDI2%20",
+        "\u0627",  # Arabic letter, outside the alphabet
+        "\u0662\u0666",  # Arabic-Indic digits
+        _b64(b"<"),
+        _b64(b"<<26"),
+        _b64(b"<abc"),
+        _b64(b"<2.5"),
+        _b64(b"<\xff\xfe"),  # not UTF-8
+        _b64(b"26"),  # a forward payload
+        _b64(b""),
+    ],
+)
+def test_qa_desc_refuses_every_malformed_cursor_with_422_and_never_500(cursor: str) -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 3)
+    response = client.get(
+        _PATH.format(conversation_id) + f"?order=desc&cursor={cursor}", headers=_auth()
+    )
+    assert response.status_code == 422, cursor
+    assert response.json()["code"] == "common.invalid_cursor"
+
+
+def test_qa_desc_cursor_round_trips_over_a_wide_range_through_http() -> None:
+    """Every issued backward cursor is URL-safe and spendable (no '+', '/', '=')."""
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 3)
+    for seq in [*range(400), 4_211, 99_999, 2**31 - 1]:
+        cursor = encode_desc_seq_cursor(seq)
+        assert not set(cursor) & set("+/=")
+        response = client.get(
+            _PATH.format(conversation_id) + f"?order=desc&cursor={cursor}", headers=_auth()
+        )
+        assert response.status_code == 200, seq
+        assert [m["seq"] for m in response.json()["data"]] == [s for s in (3, 2, 1) if s < seq]
+
+
+@pytest.mark.parametrize("order", ["asc", "desc"])
+def test_qa_a_thread_of_only_soft_deleted_messages_is_an_empty_page(order: str) -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 6, deleted=(1, 2, 3, 4, 5, 6))
+    page = _messages(client, conversation_id, f"?order={order}&limit=2")
+    assert page["data"] == []
+    assert page["meta"] == {"next_cursor": None, "limit": 2}  # type: ignore[comparison-overlap]
+
+
+def test_qa_desc_limit_bounds_on_a_long_thread() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 105)
+    one = _messages(client, conversation_id, "?order=desc&limit=1")
+    assert [m["seq"] for m in one["data"]] == [105]  # type: ignore[attr-defined]
+    assert one["meta"]["next_cursor"] is not None  # type: ignore[index]
+    top = _messages(client, conversation_id, "?order=desc&limit=100")
+    assert [m["seq"] for m in top["data"]] == list(range(105, 5, -1))  # type: ignore[attr-defined]
+    assert top["meta"]["limit"] == 100  # type: ignore[index]
+    for bad in ("101", "0", "-1", "", "1.5", "%D9%A1"):
+        response = client.get(
+            _PATH.format(conversation_id) + f"?order=desc&limit={bad}", headers=_auth()
+        )
+        assert response.status_code == 422, bad
+        assert response.json()["code"] == "common.validation_error"
+
+
+@pytest.mark.parametrize(
+    "order", ["Desc", "dEsC", "%20desc", "desc%20", "descending", "DESC", "0", "null", "%D8%AA"]
+)
+def test_qa_order_is_case_and_whitespace_strict(order: str) -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 3)
+    response = client.get(_PATH.format(conversation_id) + f"?order={order}", headers=_auth())
+    assert response.status_code == 422
+    assert response.json()["code"] == "common.validation_error"
+
+
+def test_qa_a_repeated_order_parameter_never_5xx() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 3)
+    response = client.get(_PATH.format(conversation_id) + "?order=asc&order=desc", headers=_auth())
+    assert response.status_code in (200, 422)
+
+
+def test_qa_a_desc_read_is_idempotent_double_submit() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 30)
+    path = _PATH.format(conversation_id) + "?order=desc&limit=7"
+    first, second = client.get(path, headers=_auth()), client.get(path, headers=_auth())
+    assert first.content == second.content
+    cursor = first.json()["meta"]["next_cursor"]
+    again = [client.get(path + f"&cursor={cursor}", headers=_auth()).content for _ in range(2)]
+    assert again[0] == again[1]
+
+
+def test_qa_appends_mid_backward_walk_with_a_tiny_limit_never_duplicate_or_skip() -> None:
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 12)
+    seen: list[int] = []
+    query, cursor, appended = "?order=desc&limit=3", "", 12
+    while True:
+        page = _messages(client, conversation_id, query + cursor)
+        seen += [m["seq"] for m in page["data"]]  # type: ignore[attr-defined]
+        appended += 1
+        asyncio.run(
+            stack.service.append(_scope_ctx(), conversation_id, role="user", text=f"n{appended}")
+        )
+        next_cursor = page["meta"]["next_cursor"]  # type: ignore[index]
+        if next_cursor is None:
+            break
+        cursor = f"&cursor={next_cursor}"
+    assert seen == list(range(12, 0, -1))
+
+
+def test_qa_the_order_parameter_does_not_leak_to_the_unbacked_message_routes() -> None:
+    """A viewer without conversations:read is refused identically in both directions."""
+    client, stack = _desc_app()
+    conversation_id = _seed(client, stack, 2)
+    for order in ("asc", "desc"):
+        assert client.get(_PATH.format(conversation_id) + f"?order={order}").status_code == 401
