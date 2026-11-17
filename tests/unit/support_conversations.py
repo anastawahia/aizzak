@@ -17,7 +17,7 @@ rules and refused where the adapter refuses it.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -318,15 +318,30 @@ class StubReadableFiles:
     ``spaces`` says which space a ready file is in; an id absent from it is a
     file with NO space, which is the state every row has until plan row 8-b
     and the one the router suites (which start their threads spaceless) need.
+
+    ``names_for_files`` answers the bulk liveness question (gap th-7) with the
+    same rule: live means "in ``ready``". ``bulk_calls`` records every call so a
+    suite can prove how many reads a rule paid, and ``bulk_error`` makes the
+    next calls fail so a suite can prove a failed check never widens a scope.
     """
 
     ready: set[str] = field(default_factory=set)
     spaces: dict[str, str] = field(default_factory=dict)
+    bulk_calls: list[tuple[str, ...]] = field(default_factory=list)
+    bulk_error: Exception | None = None
 
     async def get_readable(self, ctx: ExecutionContext, file_id: Uuid) -> ReadableFile | None:
         if file_id not in self.ready:
             return None
         return _StubReadableFile(file_id=file_id, space_id=self.spaces.get(file_id))
+
+    async def names_for_files(
+        self, ctx: ExecutionContext, file_ids: Sequence[Uuid]
+    ) -> Mapping[Uuid, str]:
+        self.bulk_calls.append(tuple(file_ids))
+        if self.bulk_error is not None:
+            raise self.bulk_error
+        return {fid: fid for fid in file_ids if fid in self.ready}
 
 
 def build_conversations(
@@ -343,7 +358,7 @@ def build_conversations(
     # ONE instance behind both faces, exactly as `_build_conversations` wires
     # it: a suite that pins through the API must see that pin from the
     # orchestrator's `pinned_files`.
-    list_files = ListConversationFiles(repository)
+    list_files = ListConversationFiles(repository, readable)
     return ConversationsStack(
         repository=repository,
         files=readable,

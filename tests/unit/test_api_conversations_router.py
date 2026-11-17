@@ -40,6 +40,8 @@ from fastapi.testclient import TestClient
 from app.agents.orchestrator import AgentOrchestrator, OrchestratorDependencies
 from app.api.main import PROBLEM_MEDIA_TYPE, create_app
 from app.api.v1.dependencies import ApiServices, Principal
+from app.api.v1.dto.conversations import ConversationFileOut
+from app.api.v1.dto.pagination import Page, PageMeta
 from app.api.v1.idempotent_turn import (
     IdempotentTurnLedger,
     TurnHandle,
@@ -3105,3 +3107,36 @@ def test_qa_a_request_without_a_token_is_refused_in_both_directions() -> None:
     conversation_id = _seed(client, stack, 2)
     for order in ("asc", "desc"):
         assert client.get(_PATH.format(conversation_id) + f"?order={order}").status_code == 401
+
+
+# --------------------------------------------------------------------------- #
+# ث-7 -- a pin on a deleted file (data-search-deleted-pins)                    #
+# --------------------------------------------------------------------------- #
+def test_a_fully_live_list_is_byte_identical() -> None:
+    """AC-1.5: when every pin is live the page is exactly what master returned."""
+    app, stack = _make_app()
+    stack.files.ready.update({"file-1", "file-2"})
+    stack.files.spaces.update({"file-1": _SPACE, "file-2": _SPACE})
+    client = TestClient(app)
+    conversation_id = _create(client)
+    _pin(client, conversation_id, "file-1")
+    _pin(client, conversation_id, "file-2")
+
+    response = client.get(f"/api/v1/conversations/{conversation_id}/files", headers=_auth())
+
+    rows = stack.repository.pins[conversation_id]
+    expected = Page[ConversationFileOut](
+        data=[ConversationFileOut(file_id=p.file_id, pinned_at=p.created_at) for p in rows],
+        meta=PageMeta(next_cursor=None, limit=len(rows)),
+    )
+    assert response.status_code == 200
+    assert (
+        response.content
+        == json.dumps(
+            expected.model_dump(mode="json"), separators=(",", ":"), ensure_ascii=False
+        ).encode()
+    )
+    body = response.json()
+    assert set(body) == {"data", "meta"}
+    assert set(body["meta"]) == {"next_cursor", "limit"}
+    assert all(set(row) == {"file_id", "pinned_at"} for row in body["data"])

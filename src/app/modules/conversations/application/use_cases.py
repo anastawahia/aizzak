@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.errors import ConflictError, NotFoundError, ValidationError
+from app.framework.errors import AppError, ConflictError, NotFoundError, ValidationError
 from app.framework.identifiers import new_uuid7
 from app.framework.pagination import Page
 from app.framework.providers.catalog import ModelCatalog
@@ -618,8 +618,39 @@ class SoftDeleteMessage:
         return message, ()
 
 
+async def _live_pins(
+    files: ReadableFiles, ctx: ExecutionContext, pinned: Sequence[PinnedFile]
+) -> list[PinnedFile]:
+    """The pins among ``pinned`` whose file is still live, in ``pinned``'s order (gap th-7).
+
+    ONE bulk read for the whole set, and none at all for an empty one: a thread
+    that pins nothing -- almost every thread -- pays nothing for this rule.
+    """
+    if not pinned:
+        return []
+    try:
+        live = await files.names_for_files(ctx, [pin.file_id for pin in pinned])
+    except NotFoundError as exc:
+        # A 404 out of the files seam is NOT "this thread is unknown". Letting it
+        # through would make `ConversationService.pinned_files` answer `()` --
+        # an unscoped turn -- which is the one thing a failed check must never
+        # do (gap th-7, FR-14), and would make `GET …/files` a 404 on a thread
+        # that exists. No file id goes into the detail.
+        raise AppError("the pinned files could not be checked", code="common.internal") from exc
+    return [pin for pin in pinned if pin.file_id in live]
+
+
 class ListConversationFiles:
     """The files this thread's retrieval is pinned to (BE-RAG-005).
+
+    **Live pins only** (gap th-7): a pin counts while its file is ``ready`` and
+    not deleted, asked of the ``files`` module in ONE bulk read per call (none
+    for a thread with no pins). The rows of pins whose file is gone stay in the
+    table and are skipped here, the one place both the API's ``GET …/files``
+    and the orchestrator's ``ConversationService.pinned_files`` read through,
+    so what a thread lists and what it searches can never differ. A failed
+    check raises rather than answering with an unchecked or an empty list: an
+    empty list is an UNSCOPED turn.
 
     A soft-deleted thread still answers here, unlike every WRITE in this
     module: reads in this module are permitted on a deleted thread
@@ -627,14 +658,16 @@ class ListConversationFiles:
     the transcript must be able to see what it was answering from.
     """
 
-    def __init__(self, conversations: ConversationRepository) -> None:
+    def __init__(self, conversations: ConversationRepository, files: ReadableFiles) -> None:
         self._conversations = conversations
+        self._files = files
 
     async def execute(self, ctx: ExecutionContext, conversation_id: Uuid) -> list[PinnedFile]:
         conversation = await self._conversations.get(ctx, conversation_id)
         if conversation is None:
             raise NotFoundError("conversation not found")
-        return await self._conversations.list_files(ctx, conversation_id)
+        pinned = await self._conversations.list_files(ctx, conversation_id)
+        return await _live_pins(self._files, ctx, pinned)
 
 
 class PinConversationFile:
@@ -660,14 +693,16 @@ class PinConversationFile:
     than an empty result. Hence a 409 (``spaces.cross_space_pin``), refused
     here, where both spaces are in hand.
 
-    The check is deliberately NOT repeated on read, and neither is the space
-    one. A file deleted after it was pinned leaves the pin standing (there is
-    no cross-schema FK to cascade, 01 §2.4), and retrieval finds nothing for
-    it — the same outcome as a file that was never indexed. Re-validating on
-    every read would turn another module's deletion into this module's error,
-    on a path the caller did not ask to write. (A file cannot change space
-    after it is pinned: decision 3 makes that unwritable, and the files
-    adapter's ``save`` has no such column.)
+    **Readability is asked again on every read; the space is not** (gap th-7).
+    A file deleted after it was pinned leaves the row standing (there is no
+    cross-schema FK to cascade, 01 §2.4, and the delete is soft), and
+    ``ListConversationFiles`` skips it: it is not listed, it is not in the turn
+    scope, and it does not count toward ``MAX_PINNED_FILES``. Hiding rather
+    than refusing is what keeps another module's deletion from becoming this
+    module's error: no read fails because a file went away, it simply stops
+    being pinned. (A file cannot change space after it is pinned: decision 3
+    makes that unwritable, and the files adapter's ``save`` has no such
+    column.)
 
     Idempotent by primary key, not by read-then-write: the repository upserts
     and returns the stored row, so a double-click yields 201 with the ORIGINAL
@@ -680,7 +715,9 @@ class PinConversationFile:
     grow without limit. The check is a race-tolerant pre-check: two concurrent
     pins can both pass it and leave the set one over, which is accepted here
     because the alternative (locking the thread to add a pin) buys a bound
-    nothing depends on being exact.
+    nothing depends on being exact. Only LIVE pins count, and the files seam is
+    asked only once the stored rows reach the bound: fewer rows than the bound
+    are fewer live pins too.
 
     No event, for ``PinConversationModel``'s reason (`04 §5`).
     """
@@ -700,11 +737,17 @@ class PinConversationFile:
         if not file_id.strip():
             raise ValidationError("file_id must be a non-empty string")
         pinned = await self._conversations.list_files(ctx, conversation_id)
-        already = any(pin.file_id == file_id for pin in pinned)
-        if not already and len(pinned) >= MAX_PINNED_FILES:
-            raise ValidationError(
-                f"a conversation may pin at most {MAX_PINNED_FILES} files (currently {len(pinned)})"
-            )
+        # The bound counts LIVE pins only (gap th-7): a pin whose file was
+        # deleted holds no place. Fewer stored rows than the bound means fewer
+        # live pins too, so the bulk read is paid only at the bound itself.
+        if len(pinned) >= MAX_PINNED_FILES:
+            live = await _live_pins(self._files, ctx, pinned)
+            already = any(pin.file_id == file_id for pin in live)
+            if not already and len(live) >= MAX_PINNED_FILES:
+                raise ValidationError(
+                    f"a conversation may pin at most {MAX_PINNED_FILES} files "
+                    f"(currently {len(live)})"
+                )
         readable = await self._files.get_readable(ctx, file_id)
         if readable is None:
             raise ValidationError(f"file {file_id!r} does not exist or is not readable")
@@ -896,8 +939,14 @@ class ConversationService:
         discipline ``routed_model`` follows, so what crosses is the tuple of
         ids and nothing else.
 
+        The ids are the thread's LIVE pins (gap th-7), the very list
+        ``GET …/files`` returns: a thread whose every pinned file was deleted
+        answers ``()`` and is unscoped again, exactly as after unpinning the
+        last file. Missing thread ⇒ ``()``; a failed files check RAISES, and
+        the turn fails before anything is written -- it never becomes ``()``.
+
         Missing thread ⇒ ``()``, for ``routed_model``'s reason. A soft-deleted
-        one answers with its real pins rather than ``()``: ``ListConversationFiles``
+        one answers with its real live pins rather than ``()``: ``ListConversationFiles``
         reads through a deleted thread deliberately, and quietly emptying the
         scope here would change what a thread retrieves from as a side effect
         of its deletion, on the one path where nothing should change at all.

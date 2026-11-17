@@ -3,6 +3,7 @@ Pure: the ports are faked, so no infrastructure is exercised."""
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -195,12 +196,30 @@ class _FakeReadableFiles:
     ready: set[str] = field(default_factory=set)
     calls: list[str] = field(default_factory=list)
     spaces: dict[str, str | None] = field(default_factory=dict)
+    # Gap th-7: ``names_for_files`` is the bulk liveness read. ``calls`` stays
+    # for ``get_readable`` alone, so no existing expectation changes.
+    bulk_calls: list[tuple[str, ...]] = field(default_factory=list)
+    bulk_error: Exception | None = None
+    on_get_readable: Callable[[str], None] | None = None
 
     async def get_readable(self, ctx: ExecutionContext, file_id: str) -> _ReadableFile | None:
         self.calls.append(file_id)
-        if file_id not in self.ready:
-            return None
-        return _ReadableFile(file_id, self.spaces.get(file_id, _SPACE))
+        answer = (
+            None
+            if file_id not in self.ready
+            else _ReadableFile(file_id, self.spaces.get(file_id, _SPACE))
+        )
+        if self.on_get_readable is not None:
+            self.on_get_readable(file_id)
+        return answer
+
+    async def names_for_files(
+        self, ctx: ExecutionContext, file_ids: Sequence[str]
+    ) -> dict[str, str]:
+        self.bulk_calls.append(tuple(file_ids))
+        if self.bulk_error is not None:
+            raise self.bulk_error
+        return {fid: fid for fid in file_ids if fid in self.ready}
 
 
 @dataclass
@@ -894,7 +913,7 @@ async def test_pinning_a_file_stores_it_and_reports_it_back() -> None:
     assert pin.file_id == "f1"
     assert pin.conversation_id == conversation.id
     assert pin.workspace_id == "w1"
-    listed = await ListConversationFiles(conversations).execute(_ctx(), conversation.id)
+    listed = await ListConversationFiles(conversations, files).execute(_ctx(), conversation.id)
     assert [p.file_id for p in listed] == ["f1"]
 
 
@@ -986,19 +1005,20 @@ async def test_a_deleted_thread_still_lists_its_scope() -> None:
     still open the transcript must be able to see what it answered from."""
     conversations = _FakeConversations()
     conversation = await _seed_conversation(conversations)
-    await PinConversationFile(conversations, _FakeReadableFiles(ready={"f1"})).execute(
-        _ctx(), conversation.id, "f1"
-    )
+    files = _FakeReadableFiles(ready={"f1"})
+    await PinConversationFile(conversations, files).execute(_ctx(), conversation.id, "f1")
     conversation.soft_delete(utc_now())
 
-    listed = await ListConversationFiles(conversations).execute(_ctx(), conversation.id)
+    listed = await ListConversationFiles(conversations, files).execute(_ctx(), conversation.id)
 
     assert [p.file_id for p in listed] == ["f1"]
 
 
 async def test_listing_the_scope_of_an_unknown_thread_is_a_404() -> None:
     with pytest.raises(NotFoundError):
-        await ListConversationFiles(_FakeConversations()).execute(_ctx(), "missing")
+        await ListConversationFiles(_FakeConversations(), _FakeReadableFiles()).execute(
+            _ctx(), "missing"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -1053,7 +1073,7 @@ def _threads(conversations: _FakeConversations) -> ConversationService:
         StartConversation(conversations, _FakeSpaces()),  # type: ignore[arg-type]
         AppendMessage(conversations),  # type: ignore[arg-type]
         GetConversation(conversations),  # type: ignore[arg-type]
-        ListConversationFiles(conversations),  # type: ignore[arg-type]
+        ListConversationFiles(conversations, _FakeReadableFiles()),  # type: ignore[arg-type]
         ExpectClarification(conversations),  # type: ignore[arg-type]
     )
 
