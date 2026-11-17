@@ -1701,3 +1701,153 @@ async def test_unpinning_an_orphan_pin_never_consults_the_files_module() -> None
 
     assert [p.file_id for p in conversations.pins[conversation.id]] == ["B"]
     assert files.calls == [] and files.bulk_calls == []
+
+
+# --------------------------------------------------------------------------- #
+# ث-7 -- QA edge cases (data-search-deleted-pins)                              #
+# --------------------------------------------------------------------------- #
+async def _t7_rows(
+    count: int, *, live: int
+) -> tuple[_FakeConversations, Conversation, _FakeReadableFiles, PinConversationFile]:
+    """``count`` stored pin rows, the first ``live`` of them live, the rest orphans."""
+    ids = [f"f{n}" for n in range(count)]
+    # The use-case refuses past the bound, so rows beyond it are written directly.
+    conversations, conversation, files, pin = await _t7_pinned(ids[:MAX_PINNED_FILES])
+    for file_id in ids[MAX_PINNED_FILES:]:
+        conversations.pins[conversation.id].append(
+            PinnedFile(
+                conversation_id=conversation.id,
+                file_id=file_id,
+                workspace_id="w1",
+                created_at=utc_now(),
+            )
+        )
+    for file_id in ids[live:]:
+        files.ready.discard(file_id)
+    files.ready.add("fresh")
+    return conversations, conversation, files, pin
+
+
+@pytest.mark.parametrize(
+    ("stored", "live", "accepted", "bulk_reads"),
+    [
+        # Below the bound by stored rows: never a bulk read, always accepted.
+        (MAX_PINNED_FILES - 1, MAX_PINNED_FILES - 1, True, 0),
+        (MAX_PINNED_FILES - 1, 0, True, 0),
+        # Exactly at the bound by rows: one bulk read decides.
+        (MAX_PINNED_FILES, MAX_PINNED_FILES, False, 1),
+        (MAX_PINNED_FILES, MAX_PINNED_FILES - 1, True, 1),
+        (MAX_PINNED_FILES, 0, True, 1),
+        # Above the bound by rows (orphans written directly): live count decides.
+        (MAX_PINNED_FILES + 1, MAX_PINNED_FILES, False, 1),
+        (MAX_PINNED_FILES + 1, MAX_PINNED_FILES - 1, True, 1),
+    ],
+)
+async def test_qa_the_scope_bound_at_49_50_51_stored_rows_with_orphans(
+    stored: int, live: int, accepted: bool, bulk_reads: int
+) -> None:
+    conversations, conversation, files, pin = await _t7_rows(stored, live=live)
+
+    if accepted:
+        assert (await pin.execute(_ctx(), conversation.id, "fresh")).file_id == "fresh"
+    else:
+        with pytest.raises(ValidationError, match=rf"\(currently {live}\)"):
+            await pin.execute(_ctx(), conversation.id, "fresh")
+        assert "fresh" not in [p.file_id for p in conversations.pins[conversation.id]]
+    assert len(files.bulk_calls) == bulk_reads
+
+
+async def test_qa_repinning_a_live_pin_at_the_live_bound_still_passes_with_orphans() -> None:
+    conversations, conversation, _files, pin = await _t7_rows(MAX_PINNED_FILES + 3, live=50)
+    original = {p.file_id: p.created_at for p in conversations.pins[conversation.id]}
+
+    stored = await pin.execute(_ctx(), conversation.id, "f0")
+
+    assert stored.file_id == "f0"
+    assert stored.created_at == original["f0"]
+
+
+async def test_qa_a_failed_check_at_the_bound_refuses_the_pin_and_writes_nothing() -> None:
+    conversations, conversation, files, pin = await _t7_rows(MAX_PINNED_FILES, live=10)
+    before = list(conversations.pins[conversation.id])
+    files.bulk_error = NotFoundError("file gone")
+
+    with pytest.raises(AppError) as excinfo:
+        await pin.execute(_ctx(), conversation.id, "fresh")
+
+    assert excinfo.value.code == "common.internal"
+    assert not isinstance(excinfo.value, NotFoundError)
+    assert conversations.pins[conversation.id] == before
+
+
+async def test_qa_mixed_live_deleted_and_unknown_ids_keep_stored_order() -> None:
+    conversations, conversation, files, _ = await _t7_pinned(["a", "b", "c", "d"])
+    files.ready.discard("b")
+    conversations.pins[conversation.id].insert(
+        1,
+        PinnedFile(
+            conversation_id=conversation.id,
+            file_id="never-existed",
+            workspace_id="w1",
+            created_at=utc_now(),
+        ),
+    )
+    files.bulk_calls.clear()
+
+    listed = await ListConversationFiles(conversations, files).execute(_ctx(), conversation.id)
+
+    assert [p.file_id for p in listed] == ["a", "c", "d"]
+    # Every stored id, orphans included, went into the single bulk read.
+    assert files.bulk_calls == [("a", "never-existed", "b", "c", "d")]
+
+
+async def test_qa_a_failed_check_never_turns_into_an_empty_unscoped_answer() -> None:
+    conversations, conversation, files, _ = await _t7_pinned(["A"])
+    files.bulk_error = NotFoundError("x")
+    lister = ListConversationFiles(conversations, files)
+
+    with pytest.raises(AppError):
+        await lister.execute(_ctx(), conversation.id)
+    with pytest.raises(AppError):
+        await _t7_service(conversations, lister).pinned_files(_ctx(), conversation.id)
+
+    # The row is untouched by the failed reads.
+    assert [p.file_id for p in conversations.pins[conversation.id]] == ["A"]
+
+
+async def test_qa_the_files_check_runs_under_the_callers_own_context() -> None:
+    """Tenant isolation at the seam: the bulk read is asked with the caller's ctx and
+    answers per workspace, so one workspace's live ids never vouch for another's."""
+    seen: list[str] = []
+
+    @dataclass
+    class _PerTenantFiles(_FakeReadableFiles):
+        live_by_tenant: dict[str, set[str]] = field(default_factory=dict)
+
+        async def names_for_files(
+            self, ctx: ExecutionContext, file_ids: Sequence[str]
+        ) -> dict[str, str]:
+            seen.append(ctx.workspace_id)
+            mine = self.live_by_tenant.get(ctx.workspace_id, set())
+            return {fid: fid for fid in file_ids if fid in mine}
+
+    conversations, conversation, _, _ = await _t7_pinned(["A"])
+    files = _PerTenantFiles(live_by_tenant={"w1": {"A"}})
+    lister = ListConversationFiles(conversations, files)
+
+    assert [p.file_id for p in await lister.execute(_ctx("w1"), conversation.id)] == ["A"]
+    # A caller of another workspace whose seam knows nothing of "A" sees no pin.
+    assert await lister.execute(_ctx("w2"), conversation.id) == []
+    assert seen == ["w1", "w2"]
+
+
+async def test_qa_unpinning_is_idempotent_for_live_orphan_and_unknown_ids() -> None:
+    conversations, conversation, files, _ = await _t7_pinned(["A", "B"])
+    files.ready.discard("A")
+    unpin = UnpinConversationFile(conversations)
+
+    for file_id in ("A", "A", "never-pinned", "B", "B"):
+        await unpin.execute(_ctx(), conversation.id, file_id)
+
+    assert conversations.pins[conversation.id] == []
+    assert files.calls == [] and files.bulk_calls == []
