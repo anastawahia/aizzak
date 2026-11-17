@@ -480,7 +480,7 @@ VO  MessageOrder     (asc | desc) — اتجاه قراءة السجل بـ`seq`
 | AC‑2.1 | unit + integration | `R` `test_desc_full_walk_is_three_pages_of_20_20_5`. و`RLS`: الصفحات الخلفية بالـ cursor الحقيقي | FR‑4، FR‑5 |
 | AC‑2.2 | unit | `R` `test_desc_walk_is_the_exact_reverse_of_the_asc_walk_across_gaps`: 60 رسالة، حُذفت 10 و20 و21 و30 و60، `limit=7`. كل ظاهرة مرة واحدة في كل عبور، ولا محذوفة، و`ids(desc) == list(reversed(ids(asc)))` | FR‑8 |
 | AC‑2.3 | unit | `R` `test_messages_appended_mid_walk_never_enter_its_later_pages`: صفحة أولى، ثم 3 رسائل جديدة، ثم المتابعة ⇒ 25..6 ثم 5..1. وصفحة جديدة بلا cursor تبدأ بـ 48 | FR‑13 |
-| AC‑2.4 | unit | `R` `test_a_soft_delete_mid_walk_neither_shifts_nor_skips`: بعد الصفحة الأولى تُحذف 15 و40. الصفحة الثانية = 25..6 بلا 15 (19 عنصراً)، والثالثة 5..1، ولا تكرار | FR‑8 |
+| AC‑2.4 | unit | `R` `test_a_soft_delete_mid_walk_neither_shifts_nor_skips`: بعد الصفحة الأولى تُحذف 15 و40. الصفحة الثانية = 25..5 بلا 15 (20 عنصراً)، والثالثة 4..1، ولا تكرار | FR‑8 |
 | AC‑2.5 | unit | `R` `test_a_non_null_desc_cursor_has_an_older_message_unless_all_were_deleted`: (أ) الصفحة التالية فيها رسالة أقدم. (ب) تُحذف كل الأقدم بين الطلبين ⇒ `data: []` و`null` | FR‑5 |
 | AC‑2.6 | unit | `R` `test_the_catch_up_recipe_finds_every_new_message_once`: عميل حتى 45، ثم 46..70. صفحات خلفية `limit=20` حتى أول صفحة فيها `seq ≤ 45` ⇒ صفحتان، و46..70 كلها مرة واحدة بعد الدمج بالمعرّف | س‑6 |
 | AC‑2.7 | unit | `R` `test_desc_first_page_holds_the_turn_and_the_reply_to_it`: `_ask` بالبث (منسّق حقيقي)، ثم `?order=desc&limit=20`. فيها رسالة `user` بـ`accepted.user_message_id`، ورسالة مساعد `reply_to` فيها المعرّف نفسه | س‑10 |
