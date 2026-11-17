@@ -60,7 +60,10 @@ class ConversationRepository(Protocol):
     composite primary key, not from a read-then-write the second caller could
     interleave with. ``unpin_file`` returns nothing and treats a missing pin as
     success, for the same reason a soft delete does: the caller asked for a
-    state, and the state already holds.
+    state, and the state already holds. ``list_files`` returns the STORED rows,
+    pins whose file has since been deleted included: which of them are live is
+    the application's question (``ListConversationFiles``, gap th-7), because
+    only it holds the files seam.
     """
 
     async def get(self, ctx: ExecutionContext, conversation_id: Uuid) -> Conversation | None: ...

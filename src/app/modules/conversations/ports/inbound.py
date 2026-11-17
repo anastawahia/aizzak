@@ -194,9 +194,14 @@ class ConversationThreads(Protocol):
         the knowledge module's own business (`02 §2`). Returning documents here
         would make the agents layer aware that documents exist at all.
 
-        Missing or soft-deleted ⇒ ``()``, never an error, for ``routed_model``'s
-        reason: this is a read-ahead in front of the write that does the real
-        reporting.
+        Only LIVE pins cross -- a pin whose file has been deleted is not part of
+        the scope (gap th-7) -- so when none is left the answer is ``()`` and
+        the thread is unscoped again. Missing thread ⇒ ``()``, never an error,
+        for ``routed_model``'s reason: this is a read-ahead in front of the
+        write that does the real reporting. A soft-deleted thread answers with
+        its live pins (``ConversationService``). A failed files check is the
+        one error this read raises, and it must: answering ``()`` instead would
+        widen the turn.
         """
         ...
 

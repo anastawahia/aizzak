@@ -285,13 +285,16 @@ class PinnedFile:
     ``file_id`` is a reference into another module's table, not something this
     module owns or can validate. Whether it names a real, readable file — and,
     since the spaces plan's step 7, whether that file lives in this thread's
-    own space (§3.5) — is checked once at the boundary
-    (``PinConversationFile`` against the ``FilesQuery`` seam) and deliberately
-    not re-checked on read: a file deleted after it was pinned leaves the pin
-    standing, and retrieval finds nothing for it — the same outcome as a file
-    that was never indexed. There is no ``space_id`` on the pin itself for the
-    same reason: it would be a copy of a fact that already has one owner (the
-    file's row), and copies of a fact go stale.
+    own space (§3.5) — is checked at the boundary
+    (``PinConversationFile`` against the ``FilesQuery`` seam), and readability --
+    not the space -- is asked AGAIN on every read, in one bulk read (gap th-7):
+    a file deleted after it was pinned leaves the row standing, but a pin to it
+    is skipped by the thread's list, its retrieval scope and its pin bound
+    alike, so a thread never shows or searches a file that is gone. The space is
+    not re-asked: a file cannot change space after it is pinned. There is no
+    ``space_id`` on the pin itself for the same reason: it would be a copy of a
+    fact that already has one owner (the file's row), and copies of a fact go
+    stale.
     """
 
     conversation_id: str
