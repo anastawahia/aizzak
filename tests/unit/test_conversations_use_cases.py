@@ -3,6 +3,7 @@ Pure: the ports are faked, so no infrastructure is exercised."""
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -11,7 +12,7 @@ import pytest
 
 from app.framework.clock import utc_now
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.errors import ConflictError, NotFoundError, ValidationError
+from app.framework.errors import AppError, ConflictError, NotFoundError, ValidationError
 from app.framework.identifiers import new_uuid7
 from app.framework.pagination import Page
 from app.framework.providers.catalog import ModelChoice
@@ -1409,3 +1410,294 @@ async def test_get_message_never_returns_a_soft_deleted_message() -> None:
 
     with pytest.raises(NotFoundError, match="message not found"):
         await GetMessage(repository).execute(_ctx(), conversation_id, message_id)
+
+
+# --------------------------------------------------------------------------- #
+# ث-7 — a pin on a deleted file (data-search-deleted-pins)                     #
+# --------------------------------------------------------------------------- #
+def _t7_service(
+    conversations: _FakeConversations, lister: ListConversationFiles
+) -> ConversationService:
+    return ConversationService(  # type: ignore[arg-type]
+        StartConversation(conversations, _FakeSpaces()),  # type: ignore[arg-type]
+        AppendMessage(conversations),  # type: ignore[arg-type]
+        GetConversation(conversations),  # type: ignore[arg-type]
+        lister,
+        ExpectClarification(conversations),  # type: ignore[arg-type]
+    )
+
+
+async def _t7_pinned(
+    ids: list[str], *, ready: set[str] | None = None
+) -> tuple[_FakeConversations, Conversation, _FakeReadableFiles, PinConversationFile]:
+    """A thread with ``ids`` pinned through the real use-case, one minute apart."""
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+    files = _FakeReadableFiles(ready=set(ids) if ready is None else ready)
+    pin = PinConversationFile(conversations, files)
+    for n, file_id in enumerate(ids):
+        await pin.execute(_ctx(), conversation.id, file_id)
+        # PinConversationFile stamps utc_now(); make the stored times distinct.
+        stored = conversations.pins[conversation.id]
+        stored[-1] = PinnedFile(
+            conversation_id=conversation.id,
+            file_id=file_id,
+            workspace_id="w1",
+            created_at=datetime(2026, 1, 1, 0, n, tzinfo=utc_now().tzinfo),
+        )
+    files.bulk_calls.clear()
+    files.calls.clear()
+    return conversations, conversation, files, pin
+
+
+async def test_a_deleted_file_drops_out_of_the_list_with_its_original_pinned_at() -> None:
+    conversations, conversation, files, _ = await _t7_pinned(["A", "B"])
+    before = {p.file_id: p.created_at for p in conversations.pins[conversation.id]}
+
+    files.ready.discard("A")
+    listed = await ListConversationFiles(conversations, files).execute(_ctx(), conversation.id)
+
+    assert [(p.file_id, p.created_at) for p in listed] == [("B", before["B"])]
+
+
+async def test_live_pins_keep_their_order_and_their_timestamps() -> None:
+    conversations, conversation, files, _ = await _t7_pinned(["A", "B", "C"])
+    before = {p.file_id: p.created_at for p in conversations.pins[conversation.id]}
+
+    files.ready.discard("B")
+    listed = await ListConversationFiles(conversations, files).execute(_ctx(), conversation.id)
+
+    assert [p.file_id for p in listed] == ["A", "C"]
+    assert [p.created_at for p in listed] == [before["A"], before["C"]]
+
+
+async def test_a_deleted_thread_lists_only_its_live_pins() -> None:
+    conversations, conversation, files, _ = await _t7_pinned(["A", "B"])
+    conversation.soft_delete(utc_now())
+    files.ready.discard("A")
+
+    listed = await ListConversationFiles(conversations, files).execute(_ctx(), conversation.id)
+
+    assert [p.file_id for p in listed] == ["B"]
+
+
+async def test_a_directly_written_orphan_row_is_hidden_and_left_in_place() -> None:
+    conversations, conversation, files, _ = await _t7_pinned(["B"])
+    orphan_time = datetime(2025, 5, 5, tzinfo=utc_now().tzinfo)
+    conversations.pins[conversation.id].insert(
+        0,
+        PinnedFile(
+            conversation_id=conversation.id,
+            file_id="A",
+            workspace_id="w1",
+            created_at=orphan_time,
+        ),
+    )
+    lister = ListConversationFiles(conversations, files)
+
+    listed = await lister.execute(_ctx(), conversation.id)
+    scope = await _t7_service(conversations, lister).pinned_files(_ctx(), conversation.id)
+
+    assert [p.file_id for p in listed] == ["B"]
+    assert scope == ("B",)
+    stored = {p.file_id: p.created_at for p in conversations.pins[conversation.id]}
+    assert stored["A"] == orphan_time
+
+
+async def test_a_pin_on_an_id_files_never_knew_is_hidden() -> None:
+    conversations, conversation, files, _ = await _t7_pinned(["B"])
+    conversations.pins[conversation.id].append(
+        PinnedFile(
+            conversation_id=conversation.id,
+            file_id="never-existed",
+            workspace_id="w1",
+            created_at=utc_now(),
+        )
+    )
+
+    listed = await ListConversationFiles(conversations, files).execute(_ctx(), conversation.id)
+
+    assert [p.file_id for p in listed] == ["B"]
+
+
+async def test_a_live_unindexed_pin_stays_listed_and_scoped() -> None:
+    """Live means ready and not deleted; whether it is INDEXED is not asked here."""
+    conversations, conversation, files, _ = await _t7_pinned(["F"])
+    lister = ListConversationFiles(conversations, files)
+
+    listed = await lister.execute(_ctx(), conversation.id)
+    scope = await _t7_service(conversations, lister).pinned_files(_ctx(), conversation.id)
+
+    assert [p.file_id for p in listed] == ["F"]
+    assert scope == ("F",)
+
+
+async def test_the_list_and_the_turn_scope_are_one_answer() -> None:
+    """AC-2.4 by full enumeration: 5 files x 3 states = 243 cases."""
+    ids = ["f0", "f1", "f2", "f3", "f4"]
+    for states in itertools.product(("live", "deleted", "orphan"), repeat=len(ids)):
+        conversations = _FakeConversations()
+        conversation = await _seed_conversation(conversations)
+        files = _FakeReadableFiles(
+            ready={f for f, s in zip(ids, states, strict=True) if s != "orphan"}
+        )
+        for file_id, state in zip(ids, states, strict=True):
+            if state == "orphan":
+                conversations.pins.setdefault(conversation.id, []).append(
+                    PinnedFile(
+                        conversation_id=conversation.id,
+                        file_id=file_id,
+                        workspace_id="w1",
+                        created_at=utc_now(),
+                    )
+                )
+            else:
+                await PinConversationFile(conversations, files).execute(
+                    _ctx(), conversation.id, file_id
+                )
+        for file_id, state in zip(ids, states, strict=True):
+            if state == "deleted":
+                files.ready.discard(file_id)
+        lister = ListConversationFiles(conversations, files)
+
+        listed = [p.file_id for p in await lister.execute(_ctx(), conversation.id)]
+        scope = await _t7_service(conversations, lister).pinned_files(_ctx(), conversation.id)
+
+        assert listed == list(scope), states
+        assert listed == [f for f, s in zip(ids, states, strict=True) if s == "live"], states
+
+
+async def test_pinning_a_deleted_file_with_an_orphan_row_is_still_422() -> None:
+    conversations, conversation, files, pin = await _t7_pinned(["A", "B"])
+    files.ready.discard("A")
+    before = list(conversations.pins[conversation.id])
+
+    with pytest.raises(ValidationError):
+        await pin.execute(_ctx(), conversation.id, "A")
+
+    assert conversations.pins[conversation.id] == before
+    assert files.calls == ["A"]
+
+
+async def test_orphans_hold_no_place_under_the_scope_bound() -> None:
+    ids = [f"f{n}" for n in range(MAX_PINNED_FILES)]
+    _, conversation, files, pin = await _t7_pinned(ids)
+    for file_id in ids[:10]:
+        files.ready.discard(file_id)
+    files.ready.add("fresh")
+
+    stored = await pin.execute(_ctx(), conversation.id, "fresh")
+
+    assert stored.file_id == "fresh"
+    assert len(files.bulk_calls) == 1
+
+
+async def test_the_bound_counts_and_reports_live_pins_only() -> None:
+    ids = [f"f{n}" for n in range(MAX_PINNED_FILES + 5)]
+    conversations, conversation, files, pin = await _t7_pinned(ids[:MAX_PINNED_FILES])
+    for file_id in ids[MAX_PINNED_FILES:]:
+        conversations.pins[conversation.id].append(
+            PinnedFile(
+                conversation_id=conversation.id,
+                file_id=file_id,
+                workspace_id="w1",
+                created_at=utc_now(),
+            )
+        )
+    files.ready.add("fresh")
+
+    with pytest.raises(ValidationError, match=r"\(currently 50\)"):
+        await pin.execute(_ctx(), conversation.id, "fresh")
+
+
+async def test_below_the_bound_pinning_reads_no_bulk_files() -> None:
+    _, conversation, files, pin = await _t7_pinned(["a", "b", "c"])
+    files.ready.add("d")
+
+    await pin.execute(_ctx(), conversation.id, "d")
+
+    assert files.bulk_calls == []
+
+
+async def test_a_file_deleted_between_the_check_and_the_write_never_shows() -> None:
+    # (a) deleted before the pin: refused.
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+    files = _FakeReadableFiles(ready={"A"})
+    pin = PinConversationFile(conversations, files)
+    files.ready.discard("A")
+    with pytest.raises(ValidationError):
+        await pin.execute(_ctx(), conversation.id, "A")
+
+    # (b) deleted right after get_readable answered: the pin lands, then hides.
+    files.ready.add("A")
+    files.on_get_readable = files.ready.discard
+    stored = await pin.execute(_ctx(), conversation.id, "A")
+    assert stored.file_id == "A"
+
+    lister = ListConversationFiles(conversations, files)
+    assert await lister.execute(_ctx(), conversation.id) == []
+    assert await _t7_service(conversations, lister).pinned_files(_ctx(), conversation.id) == ()
+
+
+async def test_a_not_found_from_the_files_seam_is_never_an_unknown_thread() -> None:
+    conversations, conversation, files, _ = await _t7_pinned(["A"])
+    files.bulk_error = NotFoundError("file gone")
+    lister = ListConversationFiles(conversations, files)
+
+    with pytest.raises(AppError) as excinfo:
+        await lister.execute(_ctx(), conversation.id)
+    assert not isinstance(excinfo.value, NotFoundError)
+    assert excinfo.value.code == "common.internal"
+    assert "A" not in str(excinfo.value)
+
+    with pytest.raises(AppError) as scope_error:
+        await _t7_service(conversations, lister).pinned_files(_ctx(), conversation.id)
+    assert scope_error.value.code == "common.internal"
+
+
+async def test_another_failure_of_the_files_seam_passes_through_untouched() -> None:
+    conversations, conversation, files, _ = await _t7_pinned(["A"])
+    files.bulk_error = RuntimeError("boom")
+    lister = ListConversationFiles(conversations, files)
+
+    with pytest.raises(RuntimeError):
+        await _t7_service(conversations, lister).pinned_files(_ctx(), conversation.id)
+
+
+async def test_a_thread_with_no_pins_never_asks_the_files_module() -> None:
+    conversations = _FakeConversations()
+    conversation = await _seed_conversation(conversations)
+    files = _FakeReadableFiles()
+    lister = ListConversationFiles(conversations, files)
+
+    assert await lister.execute(_ctx(), conversation.id) == []
+    assert await _t7_service(conversations, lister).pinned_files(_ctx(), conversation.id) == ()
+
+    assert files.bulk_calls == []
+    assert files.calls == []
+
+
+@pytest.mark.parametrize("count", [1, 2, MAX_PINNED_FILES])
+async def test_one_bulk_read_per_list_and_per_turn_whatever_the_size(count: int) -> None:
+    ids = [f"f{n}" for n in range(count)]
+    conversations, conversation, files, _ = await _t7_pinned(ids)
+    for file_id in ids[::2]:
+        files.ready.discard(file_id)
+    lister = ListConversationFiles(conversations, files)
+
+    await lister.execute(_ctx(), conversation.id)
+    assert files.bulk_calls == [tuple(ids)]
+    await _t7_service(conversations, lister).pinned_files(_ctx(), conversation.id)
+    assert files.bulk_calls == [tuple(ids), tuple(ids)]
+    assert files.calls == []
+
+
+async def test_unpinning_an_orphan_pin_never_consults_the_files_module() -> None:
+    conversations, conversation, files, _ = await _t7_pinned(["A", "B"])
+    files.ready.discard("A")
+
+    await UnpinConversationFile(conversations).execute(_ctx(), conversation.id, "A")
+
+    assert [p.file_id for p in conversations.pins[conversation.id]] == ["B"]
+    assert files.calls == [] and files.bulk_calls == []

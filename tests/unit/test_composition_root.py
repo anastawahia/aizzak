@@ -45,7 +45,7 @@ from app.modules.electrical.drawings.application.purge import (
     PurgeSpaceDrawings,
 )
 from app.modules.electrical.drawings.application.use_cases import DrawingsUseCases
-from app.modules.files.application.use_cases import FileUseCases, RetagFile
+from app.modules.files.application.use_cases import FilesQueryService, FileUseCases, RetagFile
 from app.modules.knowledge.application.use_cases import KnowledgeRetrievalService
 from app.modules.media.application.use_cases import GetJobStatus, MediaUseCases
 from app.modules.spaces.application.use_cases import SpacesQueryService, SpaceUseCases
@@ -750,3 +750,17 @@ async def test_teardown_notify_bridge_delegates_to_the_notify_consumers_own_tear
     await booted.teardown_notify_bridge()
 
     assert fake_consumer.torn_down_with == [booted.notify_subscriptions]
+
+
+def test_the_pin_list_and_bound_share_one_files_seam(booted: CompositionRoot) -> None:
+    """Gap th-7 (AC-5.5, FR-3): the list, the turn scope and the pin bound ask
+    ONE liveness rule through ONE ``FilesQueryService``, and the orchestrator
+    reads the very ``ListConversationFiles`` the API lists through."""
+    use_cases = booted.conversations
+    list_files = use_cases.list_files
+
+    assert list_files._files is use_cases.pin_file._files  # type: ignore[attr-defined]
+    assert isinstance(list_files._files, FilesQueryService)  # type: ignore[attr-defined]
+    threads = booted.orchestrator._deps.conversations
+    assert threads is not None
+    assert threads._list_files is list_files  # type: ignore[attr-defined]

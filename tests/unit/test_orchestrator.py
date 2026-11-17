@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import replace
 from typing import ClassVar
 
@@ -69,6 +69,11 @@ from app.modules.conversations.ports.inbound import (
 )
 from app.modules.usage.ports.inbound import LimitDecision, UsageCharge
 from tests.unit.support_access import build_authorization
+from tests.unit.support_conversations import (
+    StubActiveSpaces,
+    StubReadableFiles,
+    build_conversations,
+)
 from tests.unit.support_log_lines import json_lines
 
 _WORKSPACE = "018f0000-0000-7000-8000-000000000001"
@@ -3681,3 +3686,240 @@ async def test_no_ledger_without_a_conversations_seam() -> None:
     await _drive_with(_turn_orchestrator(_RecordingAgent, None), "recording", ledger)
 
     assert ledger.order == []
+
+
+# --------------------------------------------------------------------------- #
+# ث-7 -- a pin on a deleted file (data-search-deleted-pins)                    #
+# --------------------------------------------------------------------------- #
+_T7_OTHER = "018f0000-0000-7000-8000-0000000000ot"
+_T7_APOLOGY = "I don't have enough information in the workspace documents"
+
+
+class _T7LLM(_FakeLLM):
+    """Streams one fixed answer and counts how many times the model was asked."""
+
+    def __init__(self) -> None:
+        self.streams = 0
+
+    def stream(
+        self, messages: Sequence[LlmMessage], params: LlmParams, api_key: str
+    ) -> AsyncIterator[LlmChunk]:
+        self.streams += 1
+
+        async def _gen() -> AsyncIterator[LlmChunk]:
+            yield LlmChunk(delta="answer")
+            yield LlmChunk(delta="", finish_reason="stop", prompt_tokens=3, completion_tokens=1)
+
+        return _gen()
+
+
+class _ScopedKnowledge(_FakeKnowledge):
+    """A knowledge seam that RESPECTS the scope, the way the real one does.
+
+    A scoped call returns one chunk per scoped file that is live and indexed,
+    and a scope whose files are all gone returns NOTHING (``[]`` means "no
+    files" there, never "all of them"). An unscoped call returns a chunk for
+    every live indexed file of the asked space, which is how a widened scope is
+    told apart from a narrowed one. ``before_answer`` runs once the turn is
+    prepared and the agent is already inside retrieval: the place to delete a
+    file mid-turn.
+    """
+
+    def __init__(self, files: StubReadableFiles, indexed: dict[str, str]) -> None:
+        super().__init__()
+        self._files = files
+        self._indexed = indexed  # file id -> space id
+        self.before_answer: Callable[[], None] | None = None
+
+    async def retrieve(  # type: ignore[override]
+        self,
+        ctx: ExecutionContext,
+        query: str,
+        k: int | None = None,
+        file_ids: Sequence[str] | None = None,
+        *,
+        space_id: str,
+    ) -> Sequence[_FakeChunk]:
+        self.queries.append(query)
+        self.scopes.append(None if file_ids is None else tuple(file_ids))
+        self.spaces.append(space_id)
+        if self.before_answer is not None:
+            hook, self.before_answer = self.before_answer, None
+            hook()
+        if file_ids is None:
+            hits = [
+                f
+                for f, space in self._indexed.items()
+                if space == space_id and f in self._files.ready
+            ]
+        else:
+            hits = [f for f in file_ids if f in self._indexed and f in self._files.ready]
+        chunks = []
+        for file_id in hits:
+            chunk = _FakeChunk(f"chunk-{file_id}", f"text of {file_id}")
+            chunk.document_id = f"doc-{file_id}"
+            chunks.append(chunk)
+        return chunks
+
+
+class _T7:
+    """The real rag_agent, the real ConversationService and a scope-respecting seam."""
+
+    def __init__(
+        self, *, indexed: dict[str, str], enforcement: _FakeEnforcement | None = None
+    ) -> None:
+        self.files = StubReadableFiles(ready=set(indexed), spaces=dict(indexed))
+        self.stack = build_conversations(
+            files=self.files, spaces=StubActiveSpaces(live={_SPACE, _T7_OTHER})
+        )
+        self.knowledge = _ScopedKnowledge(self.files, indexed)
+        self.llm = _T7LLM()
+        self.resolver = _FakeResolver()
+        self.resolver.llm = self.llm
+        registry = InMemoryAgentRegistry()
+        PluginLoader().load_into(registry)
+        self.enforcement = enforcement
+        capture = _FakeCapture()
+        if enforcement is not None:
+            enforcement.bind_capture(capture)
+        self.orchestrator = AgentOrchestrator(
+            OrchestratorDependencies(
+                agents=registry,
+                executor=AgentLifecycleExecutor(),
+                providers=self.resolver,  # type: ignore[arg-type]
+                knowledge=self.knowledge,  # type: ignore[arg-type]
+                conversations=self.stack.service,
+                usage_enforcement=enforcement,
+                usage_capture=capture if enforcement is not None else None,
+                authorization=build_authorization(),
+            )
+        )
+        self.conversation_id = ""
+
+    async def open(self, *pins: str) -> _T7:
+        conversation, _ = await self.stack.use_cases.start.execute(
+            _ctx(), space_id=_SPACE, agent_key="rag_agent"
+        )
+        self.conversation_id = conversation.id
+        for file_id in pins:
+            await self.stack.use_cases.pin_file.execute(_ctx(), conversation.id, file_id)
+        return self
+
+    async def turn(self, text: str = "what is in the files?") -> list[AgentEvent]:
+        stream = await self.orchestrator.invoke(
+            _ctx(),
+            "rag_agent",
+            AgentRequest(conversation_id=self.conversation_id, input={"text": text}),
+        )
+        return [event async for event in stream]
+
+
+def _t7_final(events: list[AgentEvent]) -> AgentEvent:
+    assert events[-1].type == "final", events[-1]
+    return events[-1]
+
+
+def _t7_cited(events: list[AgentEvent]) -> list[str]:
+    return [c["document_id"] for c in _t7_final(events).data.get("citations") or []]
+
+
+async def test_a_deleted_pin_leaves_the_rest_as_the_turn_scope() -> None:
+    t7 = await _T7(indexed={"A": _SPACE, "B": _SPACE, "C": _SPACE}).open("A", "B")
+    t7.files.ready.discard("A")
+
+    events = await t7.turn()
+
+    assert t7.knowledge.scopes == [("B",)]
+    assert t7.knowledge.spaces[0] == _SPACE
+    assert _t7_cited(events) == ["doc-B"]
+
+
+async def test_no_live_pin_left_widens_the_turn_to_the_threads_space() -> None:
+    t7 = await _T7(indexed={"A": _SPACE, "B": _SPACE, "C": _SPACE}).open("A", "B")
+    t7.files.ready.difference_update({"A", "B"})
+
+    events = await t7.turn()
+
+    assert t7.knowledge.scopes == [None]
+    assert set(t7.knowledge.spaces) == {_SPACE}
+    assert _t7_cited(events) == ["doc-C"]
+    assert not _t7_final(events).data["text"].startswith(_T7_APOLOGY)
+    assert t7.llm.streams == 1
+    assert t7.resolver.calls, "the model was resolved for this turn"
+
+
+async def test_pinning_again_after_the_widening_narrows_the_next_turn() -> None:
+    t7 = await _T7(indexed={"A": _SPACE, "B": _SPACE, "C": _SPACE}).open("A", "B")
+    t7.files.ready.difference_update({"A", "B"})
+    await t7.turn()
+
+    await t7.stack.use_cases.pin_file.execute(_ctx(), t7.conversation_id, "C")
+    await t7.turn()
+
+    assert t7.knowledge.scopes[-1] == ("C",)
+    listed = await t7.stack.use_cases.list_files.execute(_ctx(), t7.conversation_id)
+    assert [p.file_id for p in listed] == ["C"]
+
+
+async def test_the_widened_scope_never_leaves_the_threads_space() -> None:
+    t7 = await _T7(indexed={"A": _SPACE, "C": _SPACE, "X": _T7_OTHER}).open("A")
+    t7.files.ready.discard("A")
+
+    events = await t7.turn()
+
+    assert t7.knowledge.scopes == [None]
+    assert set(t7.knowledge.spaces) == {_SPACE}
+    assert "doc-X" not in _t7_cited(events)
+
+
+async def test_a_live_unindexed_pin_still_falls_back() -> None:
+    """F is live but nothing was built from it: the thread stays scoped to it."""
+    t7 = await _T7(indexed={"C": _SPACE}).open()
+    t7.files.ready.add("F")
+    t7.files.spaces["F"] = _SPACE
+    await t7.stack.use_cases.pin_file.execute(_ctx(), t7.conversation_id, "F")
+
+    events = await t7.turn()
+
+    assert t7.knowledge.scopes == [("F",)]
+    assert _t7_final(events).data["text"].startswith(_T7_APOLOGY)
+    assert _t7_cited(events) == []
+
+
+async def test_a_never_pinned_thread_is_unscoped_and_reads_no_files() -> None:
+    t7 = await _T7(indexed={"C": _SPACE}).open()
+
+    await t7.turn()
+
+    assert t7.knowledge.scopes == [None]
+    assert t7.files.bulk_calls == []
+
+
+async def test_a_file_deleted_mid_turn_never_widens_that_turn() -> None:
+    t7 = await _T7(indexed={"A": _SPACE, "C": _SPACE}).open("A")
+    t7.knowledge.before_answer = lambda: t7.files.ready.discard("A")
+
+    events = await t7.turn()
+
+    assert t7.knowledge.scopes == [("A",)]
+    assert _t7_cited(events) == []
+    assert _t7_final(events).data["text"].startswith(_T7_APOLOGY)
+    assert t7.llm.streams == 0, "an empty retrieval gets the fixed apology, not the model"
+
+    await t7.turn()
+    assert t7.knowledge.scopes[-1] is None
+
+
+async def test_a_failed_files_read_reserves_nothing_and_never_reaches_knowledge() -> None:
+    enforcement = _FakeEnforcement()
+    t7 = await _T7(indexed={"A": _SPACE}, enforcement=enforcement).open("A")
+    t7.files.bulk_error = AppError("boom", code="common.internal")
+    messages_before = len(t7.stack.repository.messages.get(t7.conversation_id, []))
+
+    with pytest.raises(AppError) as excinfo:
+        await t7.turn()
+
+    assert excinfo.value.code == "common.internal"
+    assert enforcement.reserved == []
+    assert t7.knowledge.scopes == []
+    assert len(t7.stack.repository.messages.get(t7.conversation_id, [])) == messages_before
