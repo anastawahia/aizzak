@@ -2,7 +2,7 @@
 
 1. QA-5 closure: every non-canonical UUID text is refused by both guards (and by the driver's own
    parser), every canonical one still passes; the int4 bound of the pages listing at its edge,
-   and the bigint range of the conversation cursor untouched.
+   and the int4 bound of the conversation cursor (th-5: it was bigint before).
 2. A transient fault releases the lease and the redelivery of the same message completes.
 3. The hostile-input surface of the rework: profile PUT (no echo of client text anywhere in the
    problem), and the Markdown report.

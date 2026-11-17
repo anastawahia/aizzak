@@ -561,6 +561,18 @@ def _master_forward_statement(limit: int, after_seq: int | None) -> Any:
     return select(messages).where(*conditions).order_by(messages.c.seq).limit(limit + 1)
 
 
+def _backward_statement(limit: int, below_seq: int | None) -> Any:
+    """The th-5 newest-first statement, spelled out independently of the adapter."""
+    conditions = [
+        messages.c.conversation_id == _CONVERSATION,
+        messages.c.workspace_id == _WS,
+        messages.c.deleted_at.is_(None),
+    ]
+    if below_seq is not None:
+        conditions.append(messages.c.seq < below_seq)
+    return select(messages).where(*conditions).order_by(messages.c.seq.desc()).limit(limit + 1)
+
+
 @pytest.mark.parametrize("after_seq", [None, 20])
 async def test_list_messages_forward_sql_is_unchanged(after_seq: int | None) -> None:
     statements: list[Any] = []
@@ -601,19 +613,9 @@ async def test_list_messages_desc_is_one_select_below_the_cursor_newest_first(
     )
 
     assert len(statements) == 1
-    sql = " ".join(_sql(statements[0]).split())
-    assert "FROM conversations.messages" in sql
-    assert "JOIN" not in sql
-    assert "conversations.messages.conversation_id =" in sql
-    assert "conversations.messages.workspace_id =" in sql
-    assert "conversations.messages.deleted_at IS NULL" in sql
-    assert ("conversations.messages.seq <" in sql) is (below_seq is not None)
-    assert "conversations.messages.seq >" not in sql
-    assert "ORDER BY conversations.messages.seq DESC" in sql
-    params = statements[0].compile(dialect=_PG).params
-    assert 21 in params.values()
-    if below_seq is not None:
-        assert below_seq in params.values()
+    expected = _backward_statement(20, below_seq)
+    assert _sql(statements[0]) == _sql(expected)
+    assert statements[0].compile(dialect=_PG).params == expected.compile(dialect=_PG).params
 
 
 async def test_list_messages_desc_page_cursor_is_a_desc_cursor_of_the_last_row() -> None:

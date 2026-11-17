@@ -228,7 +228,7 @@ class InMemoryConversationRepository:
         cursor: str | None,
         order: MessageOrder = MessageOrder.ASC,
     ) -> Page[Message]:
-        backward = order is MessageOrder.DESC
+        backward = order == MessageOrder.DESC
         visible = sorted(
             (m for m in self.messages.get(conversation_id, []) if m.deleted_at is None),
             key=lambda m: m.seq,

@@ -476,7 +476,7 @@ class SqlConversationRepository:
         # Soft-deleted messages are excluded from retrieval (INV-CV3); their
         # `seq` stays reserved, so a page can legitimately show a gap -- in
         # either direction.
-        backward = order is MessageOrder.DESC
+        backward = order == MessageOrder.DESC
         conditions = [
             messages.c.conversation_id == conversation_id,
             messages.c.workspace_id == ctx.workspace_id,

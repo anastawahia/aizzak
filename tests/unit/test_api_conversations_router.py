@@ -3099,8 +3099,8 @@ def test_qa_appends_mid_backward_walk_with_a_tiny_limit_never_duplicate_or_skip(
     assert seen == list(range(12, 0, -1))
 
 
-def test_qa_the_order_parameter_does_not_leak_to_the_unbacked_message_routes() -> None:
-    """A viewer without conversations:read is refused identically in both directions."""
+def test_qa_a_request_without_a_token_is_refused_in_both_directions() -> None:
+    """No token: 401 for order=asc and order=desc alike."""
     client, stack = _desc_app()
     conversation_id = _seed(client, stack, 2)
     for order in ("asc", "desc"):
