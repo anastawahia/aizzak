@@ -40,6 +40,8 @@ from fastapi.testclient import TestClient
 from app.agents.orchestrator import AgentOrchestrator, OrchestratorDependencies
 from app.api.main import PROBLEM_MEDIA_TYPE, create_app
 from app.api.v1.dependencies import ApiServices, Principal
+from app.api.v1.dto.conversations import ConversationFileOut
+from app.api.v1.dto.pagination import Page, PageMeta
 from app.api.v1.idempotent_turn import (
     IdempotentTurnLedger,
     TurnHandle,
@@ -53,7 +55,12 @@ from app.framework.agent_runtime.executor import AgentLifecycleExecutor
 from app.framework.agent_runtime.metadata import AgentMetadata
 from app.framework.agent_runtime.registry import InMemoryAgentRegistry
 from app.framework.context.execution_context import ExecutionContext
-from app.framework.errors import ConflictError, RateLimitedError, UnauthorizedError
+from app.framework.errors import (
+    AppError,
+    ConflictError,
+    RateLimitedError,
+    UnauthorizedError,
+)
 from app.framework.identifiers import new_uuid7
 from app.framework.pagination import encode_desc_seq_cursor, encode_id_cursor, encode_seq_cursor
 from app.framework.ports.embedding_provider import EmbeddingProvider
@@ -3105,3 +3112,180 @@ def test_qa_a_request_without_a_token_is_refused_in_both_directions() -> None:
     conversation_id = _seed(client, stack, 2)
     for order in ("asc", "desc"):
         assert client.get(_PATH.format(conversation_id) + f"?order={order}").status_code == 401
+
+
+# --------------------------------------------------------------------------- #
+# ث-7 -- a pin on a deleted file (data-search-deleted-pins)                    #
+# --------------------------------------------------------------------------- #
+def test_a_fully_live_list_is_byte_identical() -> None:
+    """AC-1.5: when every pin is live the page is exactly what master returned."""
+    app, stack = _make_app()
+    stack.files.ready.update({"file-1", "file-2"})
+    stack.files.spaces.update({"file-1": _SPACE, "file-2": _SPACE})
+    client = TestClient(app)
+    conversation_id = _create(client)
+    _pin(client, conversation_id, "file-1")
+    _pin(client, conversation_id, "file-2")
+
+    response = client.get(f"/api/v1/conversations/{conversation_id}/files", headers=_auth())
+
+    rows = stack.repository.pins[conversation_id]
+    expected = Page[ConversationFileOut](
+        data=[ConversationFileOut(file_id=p.file_id, pinned_at=p.created_at) for p in rows],
+        meta=PageMeta(next_cursor=None, limit=len(rows)),
+    )
+    assert response.status_code == 200
+    assert (
+        response.content
+        == json.dumps(
+            expected.model_dump(mode="json"), separators=(",", ":"), ensure_ascii=False
+        ).encode()
+    )
+    body = response.json()
+    assert set(body) == {"data", "meta"}
+    assert set(body["meta"]) == {"next_cursor", "limit"}
+    assert all(set(row) == {"file_id", "pinned_at"} for row in body["data"])
+
+
+def _t7_app(
+    *files: str, raise_server_exceptions: bool = True
+) -> tuple[TestClient, ConversationsStack, str]:
+    """A thread with ``files`` pinned through the API (all ready, in ``_SPACE``)."""
+    app, stack = _make_app()
+    stack.files.ready.update(files)
+    stack.files.spaces.update(dict.fromkeys(files, _SPACE))
+    client = TestClient(app, raise_server_exceptions=raise_server_exceptions)
+    conversation_id = _create(client)
+    for file_id in files:
+        assert _pin(client, conversation_id, file_id).status_code == 201  # type: ignore[attr-defined]
+    return client, stack, conversation_id
+
+
+def test_a_deleted_file_is_no_longer_listed_as_pinned() -> None:
+    client, stack, conversation_id = _t7_app("file-AA", "file-BB")
+    before = client.get(f"/api/v1/conversations/{conversation_id}/files", headers=_auth()).json()
+    pinned_at_b = before["data"][1]["pinned_at"]
+
+    stack.files.ready.discard("file-AA")
+    response = client.get(f"/api/v1/conversations/{conversation_id}/files", headers=_auth())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "data": [{"file_id": "file-BB", "pinned_at": pinned_at_b}],
+        "meta": {"next_cursor": None, "limit": 1},
+    }
+    assert "file-AA" not in response.text
+
+
+def test_all_pins_deleted_lists_an_empty_page() -> None:
+    client, stack, conversation_id = _t7_app("file-AA", "file-BB")
+    stack.files.ready.clear()
+
+    response = client.get(f"/api/v1/conversations/{conversation_id}/files", headers=_auth())
+
+    assert response.status_code == 200
+    assert response.json() == {"data": [], "meta": {"next_cursor": None, "limit": 0}}
+
+
+def test_a_soft_deleted_thread_lists_only_its_live_pins() -> None:
+    client, stack, conversation_id = _t7_app("file-AA", "file-BB")
+    assert (
+        client.delete(f"/api/v1/conversations/{conversation_id}", headers=_auth()).status_code
+        == 204
+    )
+    stack.files.ready.discard("file-AA")
+
+    assert _pinned(client, conversation_id) == ["file-BB"]
+
+
+def test_the_list_guards_run_before_any_files_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, stack, conversation_id = _t7_app("file-AA")
+    stack.files.bulk_calls.clear()
+    path = f"/api/v1/conversations/{conversation_id}/files"
+
+    assert client.get(path).status_code == 401
+    unknown = client.get("/api/v1/conversations/nope/files", headers=_auth())
+    assert unknown.status_code == 404
+    assert unknown.json()["code"] == "common.not_found"
+
+    async def _as_other_workspace(self: _FakeAuth, token: str) -> Principal:
+        return Principal(
+            workspace_id="018f0000-0000-7000-8000-0000000000w2",
+            user_id="018f0000-0000-7000-8000-0000000000u2",
+            roles=frozenset({"owner"}),
+        )
+
+    async def _as_nobody(self: _FakeAuth, token: str) -> Principal:
+        return Principal(workspace_id=_W1, user_id=_U1, roles=frozenset())
+
+    monkeypatch.setattr(_FakeAuth, "authenticate", _as_other_workspace)
+    assert client.get(path, headers=_auth()).status_code == 404
+    monkeypatch.setattr(_FakeAuth, "authenticate", _as_nobody)
+    forbidden = client.get(path, headers=_auth())
+    assert forbidden.status_code == 403
+    assert forbidden.json()["code"] == "authz.forbidden"
+
+    assert stack.files.bulk_calls == []
+
+
+def test_unpinning_a_deleted_files_pin_is_204_twice_and_drops_the_row() -> None:
+    client, stack, conversation_id = _t7_app("file-AA", "file-BB")
+    stack.files.ready.discard("file-AA")
+    path = f"/api/v1/conversations/{conversation_id}/files/file-AA"
+
+    first = client.delete(path, headers=_auth())
+    stored = [p.file_id for p in stack.repository.pins[conversation_id]]
+    second = client.delete(path, headers=_auth())
+
+    assert (first.status_code, second.status_code) == (204, 204)
+    assert stored == ["file-BB"]
+    assert _pinned(client, conversation_id) == ["file-BB"]
+
+
+def test_pinning_a_deleted_file_with_an_orphan_row_is_422_on_the_wire() -> None:
+    client, stack, conversation_id = _t7_app("file-AA", "file-BB")
+    stack.files.ready.discard("file-AA")
+    rows_before = list(stack.repository.pins[conversation_id])
+
+    response = _pin(client, conversation_id, "file-AA")
+
+    assert response.status_code == 422  # type: ignore[attr-defined]
+    assert response.json()["code"] == "common.validation_error"  # type: ignore[attr-defined]
+    assert stack.repository.pins[conversation_id] == rows_before
+
+
+@pytest.mark.parametrize(
+    "failure", [AppError("boom", code="common.internal"), RuntimeError("boom")]
+)
+def test_a_failed_files_read_is_a_500_that_names_no_file(failure: Exception) -> None:
+    client, stack, conversation_id = _t7_app("file-AA", raise_server_exceptions=False)
+    stack.files.bulk_error = failure
+
+    response = client.get(f"/api/v1/conversations/{conversation_id}/files", headers=_auth())
+
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)
+    assert response.json()["code"] == "common.internal"
+    assert "file-AA" not in response.text
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_a_failed_files_read_fails_the_turn_before_anything_is_written(stream: bool) -> None:
+    client, stack, conversation_id = _t7_app("file-AA", raise_server_exceptions=False)
+    stack.files.bulk_error = AppError("boom", code="common.internal")
+    messages_before = len(stack.repository.messages.get(conversation_id, []))
+
+    response = _post(client, conversation_id, key=_KEY, stream=stream)
+
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith(PROBLEM_MEDIA_TYPE)
+    assert "event-stream" not in response.headers["content-type"]
+    assert "event: accepted" not in response.text
+    assert len(stack.repository.messages.get(conversation_id, [])) == messages_before
+    assert _RUNS == []
+
+    # The key was released: the retry, once the read works, runs the turn.
+    stack.files.bulk_error = None
+    retry = _post(client, conversation_id, key=_KEY, stream=False)
+    assert retry.status_code == 200
+    assert _RUNS == ["echo"]

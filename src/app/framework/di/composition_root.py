@@ -1317,8 +1317,9 @@ def _build_conversations(
     would be harmless — but they would misrepresent the wiring: there is one
     conversations store, reached two ways), and ONE
     ``ListConversationFiles`` behind both the API's ``GET …/files`` and the
-    orchestrator's scope read, so the orchestrator sees exactly what the API
-    just wrote.
+    orchestrator's scope read, over the SAME files seam the pin is checked
+    through, so the list, the turn scope and the pin bound share one liveness
+    rule (gap th-7) and the orchestrator sees exactly what the API lists.
 
     ``catalog`` is the SAME resolver the orchestrator routes through, narrowed:
     a second source for "what is routable" would let the API accept a key
@@ -1338,7 +1339,7 @@ def _build_conversations(
     cascade destroys are the ones the API can see.
     """
     repository = SqlConversationRepository(tenant_session)
-    list_files = ListConversationFiles(repository)
+    list_files = ListConversationFiles(repository, files)
     use_cases = ConversationUseCases(
         start=StartConversation(repository, spaces),
         get=GetConversation(repository),

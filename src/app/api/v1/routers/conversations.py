@@ -515,6 +515,10 @@ async def list_conversation_files(
     """The files this thread's retrieval is pinned to (`03 §1`,
     ``listConversationFiles``).
 
+    Live pins only (gap th-7): a pin whose file was deleted is not listed and is
+    not in the scope the next turn searches, and when none is left the thread is
+    unscoped again.
+
     **A ``Page`` with no cursor parameter, deliberately.** The pinned set is
     bounded (``MAX_PINNED_FILES``), so every read carries all of it and
     ``next_cursor`` is always ``null``; the envelope is kept because the client

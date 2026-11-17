@@ -867,6 +867,21 @@ class _SpaceRow:
         self.space_id = space_id
 
 
+class _UnusedFiles:
+    """A ``ReadableFiles`` seam no workflow run may ever call.
+
+    A run pins nothing, so neither the single nor the bulk read (gap th-7) is
+    reachable; if either is, the run started asking the files module and this
+    suite must say so loudly.
+    """
+
+    async def get_readable(self, ctx: object, file_id: str) -> object:
+        raise AssertionError("a workflow run never reads a file")
+
+    async def names_for_files(self, ctx: object, file_ids: object) -> object:
+        raise AssertionError("a workflow run never reads a file")
+
+
 class _Spaces:
     """An ``ActiveSpaces`` seam over a set of live ids, and a recorder.
 
@@ -905,7 +920,7 @@ def _conversation_service(
         StartConversation(repo, spaces or _Spaces()),
         AppendMessage(repo),
         GetConversation(repo),
-        ListConversationFiles(repo),  # type: ignore[arg-type]
+        ListConversationFiles(repo, _UnusedFiles()),  # type: ignore[arg-type]
         # ب-9 — wired for the same reason `list_files` is: a workflow run has
         # no pending clarification and never will (nobody is asked anything
         # inside one), but the port is ONE protocol and a partial construction

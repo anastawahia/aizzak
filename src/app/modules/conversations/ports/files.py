@@ -13,12 +13,15 @@ shape it needs here and the Composition Root binds ``files``' own
 site, so a change to ``FilesQuery.get_readable`` turns that line red instead of
 drifting silently.
 
-The Protocol is deliberately narrower than ``FilesQuery``: this module asks one
-question — "is there a readable file with this id **in this thread's space**?"
-(the space half arrived with the spaces plan's §3.5) — and ``ReadableFile``
-exposes only what answering it takes, because a name or a size here would be
-file metadata ``conversations`` has no business projecting (`03 §1` keeps that
-on ``GET /files``, which the client joins by id).
+The Protocol is deliberately narrower than ``FilesQuery``: this module asks two
+questions, and ``ReadableFile`` exposes only what answering them takes.
+``get_readable`` asks about ONE file at the moment it is pinned -- "is there a
+readable file with this id **in this thread's space**?" (the space half
+arrived with the spaces plan's §3.5). ``names_for_files`` asks about a
+thread's whole pinned set on every read -- "which of these are still live?"
+(gap th-7) -- and only the PRESENCE of an id is read, never its name: a name or
+a size here would be file metadata ``conversations`` has no business
+projecting (`03 §1` keeps that on ``GET /files``, which the client joins by id).
 
 ``file_id`` is a read-only ``@property`` and not a bare annotation for the
 reason ``deps_ports.RetrievedChunkView`` records: a bare ``x: str`` declares a
@@ -28,6 +31,7 @@ one — can satisfy.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Protocol
 
 from app.framework.context.execution_context import ExecutionContext
@@ -64,6 +68,26 @@ class ReadableFiles(Protocol):
     distinguish them: they are all "retrieval will never reach this", and
     telling a caller which one is true of a file they cannot read is a
     disclosure, not a diagnosis.
+
+    ``names_for_files`` is that same rule asked of a whole pinned set at once
+    (gap th-7): it is how a pin whose file was deleted after it was pinned
+    drops out of the list, the turn scope and the pin bound alike.
     """
 
     async def get_readable(self, ctx: ExecutionContext, file_id: Uuid) -> ReadableFile | None: ...
+
+    async def names_for_files(
+        self, ctx: ExecutionContext, file_ids: Sequence[Uuid]
+    ) -> Mapping[Uuid, str]:
+        """Which of ``file_ids`` are still LIVE files, in ONE read (gap th-7).
+
+        Presence is the whole answer: an id in the mapping names a file that
+        is ``ready`` and not deleted, exactly what a non-``None``
+        ``get_readable`` means, and an absent id -- deleted, quarantined,
+        unknown, or another tenant's -- is a pin this thread no longer
+        answers from. The NAME is never read here: it is file metadata this
+        module has no business projecting (module docstring), and the method
+        is ``FilesQuery``'s own so the binding stays one line and one
+        instance (the ``knowledge`` port's precedent).
+        """
+        ...
