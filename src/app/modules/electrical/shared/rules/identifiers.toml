@@ -77,14 +77,21 @@ location = "++"
 
 [kks.parts]
 system = { level = 1, mask = "NNAAANN" }
+system_code = { level = 1, mask = "NNAAA" }  # F3 (gap 16): the system code alone (20XYZ)
 equipment = { level = 2, mask = "AANNNa" }
 component = { level = 3, mask = "AANN" }
+component_wide = { level = 3, mask = "AANNN" }  # F3 (gap 17, decision F3-Q3): three digits
 cable = { mask = "NNNN" }  # A-2: four digits after a system or equipment tag
 
 # First full match in file order wins.
 [[kks.forms]]
 name = "component"
 parts = ["system", "equipment", "component"]
+class = "component"
+
+[[kks.forms]]
+name = "component_wide"
+parts = ["system", "equipment", "component_wide"]
 class = "component"
 
 [[kks.forms]]
@@ -105,6 +112,13 @@ class = "cable"
 [[kks.forms]]
 name = "system"
 parts = ["system"]
+class = "system"
+
+# F3 (gap 16): the system code alone. LAST, so the longer forms win. It is level 1, so it is no
+# evidence of KKS (evidence_min_level = 2).
+[[kks.forms]]
+name = "system_code"
+parts = ["system_code"]
 class = "system"
 
 # ANSI/IEEE C37.2 device function numbers (FR-ID-16, D-36): the numbers, the suffix letters
@@ -172,6 +186,9 @@ slash_page_dot_column = '^/(?!0+\.)(\d{1,4})\.(\d{1,2})$'
 page_dot_column = '^(?!0+\.)(\d{1,4})\.(\d{1,2})$'
 prefixed_slash = '^(=[A-Z0-9]+)/(?!0+\.)(\d{1,4})\.(\d{1,2})$'
 page_slash_column = '^(?!0+/)(\d{1,4})/(\d{1,2})$'
+# F3 (gap 23): a location: page, dot, column and row (27.6E), or on the same page (.6E).
+page_dot_location = '^(?!0+\.)(\d{1,4})\.(\d{1,2}[A-Z])$'
+same_page_location = '^\.(\d{1,2}[A-Z])$'
 
 # label -> pole role (FR-ID-07)
 [connection_points]

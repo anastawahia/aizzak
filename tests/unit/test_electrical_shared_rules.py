@@ -329,12 +329,12 @@ def test_s1_optional_positions_are_capped() -> None:
 
     def three_parts(d: dict[str, Any]) -> None:
         parts = d["kks"]["parts"]
-        parts["pa"], parts["pb"], parts["pc"] = (
-            {"mask": "Nnn"},
-            {"mask": "Ann"},
-            {"mask": "Nnn"},
+        # the packaged parts hold one optional position (equipment); F3 brought them to six,
+        # so two new parts keep this inside the eight-part limit: 2 + 2 + 1 optional > 4
+        parts["pa"], parts["pb"] = {"mask": "Nnn"}, {"mask": "Ann"}
+        d["kks"]["forms"].append(
+            {"name": "wide", "parts": ["pa", "pb", "equipment"], "class": "system"}
         )
-        d["kks"]["forms"].append({"name": "wide", "parts": ["pa", "pb", "pc"], "class": "system"})
 
     with pytest.raises(RuleError, match="optional"):
         IdentifierRules.from_mapping(_mutated(three_parts))

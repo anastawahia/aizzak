@@ -192,6 +192,13 @@ def test_the_dominant_cross_reference_format_is_proposed() -> None:
     assert propose(iec(100)).profile.cross_reference_format is CrossReferenceFormat.AUTO
 
 
+def test_location_formats_keep_auto() -> None:
+    """F3-AC-22: 27.6E and .6E are cross-references, but not formats a profile can name, so
+    a document made of them stays `auto`."""
+    found = propose([*iec(100), *["27.6E", ".6E", "27.7E"] * 10])
+    assert found.profile.cross_reference_format is CrossReferenceFormat.AUTO
+
+
 def test_plc_families_are_those_that_appeared() -> None:
     found = propose([*iec(100), "I0.0", "Q0.1", "%I0.0"])
     assert found.profile.plc_families == frozenset({PlcFamily.S7_EN, PlcFamily.TIA})

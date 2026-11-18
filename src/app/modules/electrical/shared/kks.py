@@ -37,6 +37,7 @@ ISSUE_LETTER_IN_DIGIT: Final = "kks.letter_in_digit_position"
 ISSUE_DIGIT_IN_LETTER: Final = "kks.digit_in_letter_position"
 ISSUE_EXCLUDED_LETTER: Final = "kks.excluded_letter"
 _CHARSET: Final = re.compile(r"[=+]{0,2}[0-9A-Z]+", re.ASCII)
+_ONE: Final = 1
 # The outer shape of a near-miss: digits, letters, digits, then letter/digit groups.
 _OUTER: Final = re.compile(r"\d{1,3}[A-Z]{1,4}\d{1,3}(?:[A-Z]{1,3}\d{1,4}[A-Z]?){0,3}", re.ASCII)
 _RUN: Final = re.compile(r"[0-9]+|[A-Z]+", re.ASCII)
@@ -122,18 +123,44 @@ def is_kks_evidence(found: ParsedIdentifier, rules: IdentifierRules) -> bool:
     return found.valid and found.kks is not None and found.kks.level >= rules.kks.evidence_min_level
 
 
+def _cut_separator(canonical: str, kks: KksRules) -> tuple[str, int | None] | None:
+    """F3 (gap 33): the text without the ONE separator a tag may carry between two parts, and
+    where it was (an index into the text without it); ``(canonical, None)`` when it has none.
+    None when a separator is repeated: such a text is no tag."""
+    for separator in sorted(kks.part_separators):
+        count = canonical.count(separator)
+        if count > _ONE:
+            return None
+        if count == _ONE:
+            at = canonical.index(separator)
+            return canonical[:at] + canonical[at + 1 :], at
+    return canonical, None
+
+
+def _on_a_boundary(match: re.Match[str], form_parts: int, cut: int, offset: int) -> bool:
+    """Does the separator fall exactly between two parts of the matched form?"""
+    return any(match.end(f"p{i}") == cut - offset for i in range(form_parts - 1))
+
+
 def parse_kks_tag(
     canonical: str, forms: NormalizedForms, rules: IdentifierRules
 ) -> ParsedIdentifier | None:
-    if Convention.KKS not in rules.conventions or _CHARSET.fullmatch(canonical) is None:
+    if Convention.KKS not in rules.conventions:
         return None
     kks = rules.kks
-    prefix, prefix_kind, rest = _split_prefix(canonical, kks)
+    cut = _cut_separator(canonical, kks)
+    if cut is None or _CHARSET.fullmatch(cut[0]) is None:
+        return None
+    joined, at = cut
+    prefix, prefix_kind, rest = _split_prefix(joined, kks)
     if not rest[:1].isdigit():
         return None
     for index, pattern in enumerate(_patterns(kks.spec, "", "")):
         match = pattern.fullmatch(rest)
-        if match is not None:
+        if match is not None and (
+            at is None
+            or _on_a_boundary(match, len(kks.forms[index].parts), at, len(joined) - len(rest))
+        ):
             tag = _tag(index, match, kks, prefix, prefix_kind)
             excluded = any(
                 ch in kks.excluded_letters for part in tag.parts for ch in part.text if ch.isalpha()
@@ -146,7 +173,12 @@ def parse_kks_tag(
                 issues=(ISSUE_EXCLUDED_LETTER,) if excluded else (),
                 kks=tag,
             )
-    if prefix is not None or _OUTER.fullmatch(rest) is None or len(rest) < kks.shortest:
+    if (
+        at is not None
+        or prefix is not None
+        or _OUTER.fullmatch(rest) is None
+        or len(rest) < kks.near_miss_min_length
+    ):
         return None
     return ParsedIdentifier(
         kind=IdentifierKind.KKS_TAG,

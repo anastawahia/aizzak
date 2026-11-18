@@ -228,3 +228,18 @@ def test_f3_ac_10_other_pages_read_as_before(text: str, variant: str) -> None:
     found = IdentifierParser(load_rules()).parse(text)
     assert found is not None and found.kind is IdentifierKind.CROSS_REFERENCE
     assert found.variant == variant
+
+
+# --- location references (F3-AC-22) ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "variant"), [("27.6E", "page_dot_location"), (".6E", "same_page_location")]
+)
+def test_f3_ac_22_location_references(text: str, variant: str) -> None:
+    found = IdentifierParser(load_rules()).parse(text)
+    assert found is not None and found.kind is IdentifierKind.CROSS_REFERENCE
+    assert found.variant == variant and found.valid
+    assert IdentifierParser(load_rules()).parse("0.6E") is None
+    # the older formats win where they read the text
+    assert IdentifierParser(load_rules()).parse("27.6").variant == "page_dot_column"  # type: ignore[union-attr]

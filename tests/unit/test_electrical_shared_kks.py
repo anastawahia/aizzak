@@ -25,6 +25,7 @@ from app.modules.electrical.shared.kks import (
 )
 from app.modules.electrical.shared.parser import IdentifierParser
 from app.modules.electrical.shared.rules import IdentifierRules
+from app.modules.electrical.shared.tokens import split_candidates
 from tests.eval.electrical.m04_identifiers import load_cases, load_rules, observed, parse_case
 from tests.unit.support_electrical_shared import _selection, fw, parser_for
 
@@ -133,7 +134,7 @@ def test_kks_is_off_unless_named() -> None:
 
 
 def test_too_short_or_not_tag_shaped_text_is_no_identifier() -> None:
-    for text in ("7XY123", "AB123", "20XYZ", "2020", "20-XYZ10", "20XYZ10AB123-1"):
+    for text in ("7XY123", "AB123", "2020", "20-XYZ10", "20XYZ10AB123-1"):
         found = KKS.parse(text)
         assert found is None or found.kind is not IdentifierKind.KKS_TAG, text
 
@@ -159,6 +160,12 @@ def _raw() -> dict[str, Any]:
         .read_text(encoding="utf-8")
     )
     return tomllib.loads(text)
+
+
+def _mutate(change: Any) -> dict[str, Any]:
+    data = copy.deepcopy(_raw())
+    change(data)
+    return data
 
 
 def test_the_keys_keep_the_leading_zeros_so_two_tags_never_meet() -> None:
@@ -201,3 +208,74 @@ def test_the_kks_evidence_rule() -> None:
         assert is_kks_evidence(_kks(text), rules), text
     for text in ("20XYZ10", "20XYZ104567", "20XY10AB123"):  # level 1, level 1, invalid
         assert not is_kks_evidence(_kks(text), rules), text
+
+
+# --- F3 (gaps 16, 17, 33): the system code, the wide component and a dash between parts ---
+
+
+def test_f3_ac_21_the_system_code_alone_is_level_one_and_no_evidence() -> None:
+    for text in ("20XYZ", "(20XYZ)"):
+        (candidate,) = split_candidates(text)
+        found = _kks(candidate)
+        assert found.kind is IdentifierKind.KKS_TAG and found.valid
+        assert found.kks is not None
+        assert (found.kks.form, found.kks.kks_class, found.kks.level) == (
+            "system_code",
+            KksClass.SYSTEM,
+            1,
+        )
+        assert not is_kks_evidence(found, KKS.rules)
+    # thirty of them are still no evidence: the tally does not see KKS in the document
+    assert KKS.tally(["20XYZ"] * 30).conventions == {}
+    probe = parser_for(Convention.IEC_81346).tally(["20XYZ"] * 30)
+    assert probe.conventions == {}
+
+
+def test_f3_ac_21_a_dash_between_two_parts_is_part_of_the_tag() -> None:
+    found = _kks("20XYZ10AB123-CD45")
+    assert found.valid and found.kks is not None and found.kks.form == "component"
+    assert found.forms.canonical == "20XYZ10AB123-CD45"
+    assert found.forms.search_keys == ("20XYZ10AB123-CD45", "20XYZ10AB123CD45")
+    assert _kks("20XYZ10AB123CD45").forms.search_keys[-1] == found.forms.search_keys[-1]
+    equipment = _kks("20XYZ10-AB123")
+    assert equipment.valid and equipment.kks is not None and equipment.kks.form == "equipment"
+    prefixed = _kks("=20XYZ10AB123-CD45")
+    assert prefixed.valid and prefixed.kks is not None and prefixed.kks.prefix == "="
+    assert prefixed.forms.search_keys == ("=20XYZ10AB123-CD45", "20XYZ10AB123CD45")
+
+
+@pytest.mark.parametrize("text", ["20XYZ1-0AB123", "20XYZ10AB123--CD45", "2-0XYZ10AB123"])
+def test_f3_ac_21_a_dash_inside_a_part_or_two_dashes_is_no_tag(text: str) -> None:
+    assert KKS.parse(text) is None
+
+
+def test_f3_ac_21_the_wide_component_is_a_valid_component() -> None:
+    found = _kks("20XYZ10AB123CD456")
+    assert found.valid and found.kks is not None
+    assert (found.kks.form, found.kks.kks_class) == ("component_wide", KksClass.COMPONENT)
+    assert found.kks.level == 3 and found.kks.parts[2].text == "CD456"
+    assert is_kks_evidence(found, KKS.rules)
+    assert KKS.parse("1AB12") is None
+
+
+def test_f3_ac_21_the_near_miss_floor_is_a_data_key() -> None:
+    """The system code (five characters) must not widen the 'malformed tag' flag to short
+    text: the floor is the rules' ``near_miss_min_length`` and not the shortest form."""
+    assert KKS.rules.kks.near_miss_min_length == 7
+    assert KKS.parse("20XY10") is None  # six characters shaped like a tag, below the floor
+    seven = KKS.parse("20XY101")  # seven: reported malformed, as before
+    assert seven is not None and not seven.valid and seven.issues == (ISSUE_MALFORMED,)
+    lower = IdentifierRules.from_mapping(_mutate(lambda d: d["kks"].update(near_miss_min_length=5)))
+    narrowed = lower.narrowed(_selection(conventions=frozenset({Convention.KKS})))
+    flagged = IdentifierParser(narrowed).parse("20XY10")
+    assert flagged is not None and not flagged.valid and flagged.issues == (ISSUE_MALFORMED,)
+
+
+def test_f3_nfr_3_a_part_separator_is_data() -> None:
+    none = IdentifierRules.from_mapping(_mutate(lambda d: d["kks"].update(part_separators=[])))
+    narrowed = none.narrowed(_selection(conventions=frozenset({Convention.KKS})))
+    assert IdentifierParser(narrowed).parse("20XYZ10AB123-CD45") is None
+    dot = IdentifierRules.from_mapping(_mutate(lambda d: d["kks"].update(part_separators=["."])))
+    narrowed = dot.narrowed(_selection(conventions=frozenset({Convention.KKS})))
+    found = IdentifierParser(narrowed).parse("20XYZ10AB123.CD45")
+    assert found is not None and found.valid and found.forms.canonical == "20XYZ10AB123.CD45"
