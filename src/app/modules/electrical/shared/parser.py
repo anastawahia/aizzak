@@ -39,12 +39,27 @@ from app.modules.electrical.shared.ansi import (
     parse_ansi_device_in_context,
     read_compound,
 )
-from app.modules.electrical.shared.connection_points import parse_connection_point
+from app.modules.electrical.shared.connection_points import is_valid_label, parse_connection_point
 from app.modules.electrical.shared.cross_references import parse_cross_reference
+from app.modules.electrical.shared.groups import (
+    ISSUE_EMPTY_MEMBER,
+    ISSUE_MEMBER_INVALID,
+    ISSUE_MEMBER_UNREADABLE,
+    ISSUE_TOO_MANY,
+    LIST_SEPARATOR,
+    RANGE_SEPARATOR,
+    inherit,
+    list_items,
+    range_members,
+    suffix_members,
+)
 from app.modules.electrical.shared.kinds import (
     ADDITIVE_CONVENTIONS,
     Convention,
     ConventionTally,
+    GroupForm,
+    GroupMember,
+    IdentifierGroup,
     IdentifierKind,
     NormalizedForms,
     ParsedIdentifier,
@@ -56,6 +71,7 @@ from app.modules.electrical.shared.normalization import (
     ISSUE_NON_ASCII,
     NON_INVALIDATING_ISSUES,
     canonical_form,
+    dedupe,
     folded,
     has_enclosed_number,
     normalize,
@@ -75,6 +91,7 @@ if TYPE_CHECKING:
 # Longer text is prose. The bound applies to the raw text AND to the canonical form (NFKC
 # can expand one character into many), so it bounds every regular expression's input.
 MAX_TEXT_CHARS = 200
+MAX_GROUP_KEYS = 64  # F3: a group's search keys (its own form, then each member's)
 
 _Parse = Callable[[str, NormalizedForms, "IdentifierRules"], ParsedIdentifier | None]
 
@@ -165,10 +182,18 @@ class IdentifierParser:
         return self._first(forms, hint, text)
 
     def _first(
-        self, forms: NormalizedForms, hint: IdentifierKind | None, text: str
+        self,
+        forms: NormalizedForms,
+        hint: IdentifierKind | None,
+        text: str,
+        *,
+        grouped: bool = True,
     ) -> ParsedIdentifier | None:
-        if hint is None and self._is_rating(forms, text):
-            return None  # F3 (FR-ID-20): a value with a unit is a rating, never an identifier
+        if hint is None:
+            if self._is_rating(forms, text):
+                return None  # F3 (FR-ID-20): a value with a unit is a rating, never an identifier
+            if grouped and (group := self._group(forms)) is not None:
+                return _flag_text(group, text_issues(text))
         candidates: Iterable[_Parse] = (
             _HINTED[hint]
             if hint is not None and hint in _HINTED
@@ -181,6 +206,102 @@ class IdentifierParser:
                     found = replace(found, alternatives=alternatives)
                 return _flag_text(found, text_issues(text))
         return None
+
+    def _member(self, text: str) -> ParsedIdentifier | None:
+        """One member of a group, read alone and never as a group (the depth is 1)."""
+        return self._first(normalize(text), None, text, grouped=False)
+
+    def _group(self, forms: NormalizedForms) -> ParsedIdentifier | None:
+        """F3 (FR-ID-19): the text as a range, a list or a suffix list, or None. A range is
+        tried first (before the terminals: ``X23-X37``), then a list, then a suffix list."""
+        canonical = forms.canonical
+        limit = self._rules.groups.max_members
+        if RANGE_SEPARATOR in canonical and (ranged := range_members(canonical, limit)):
+            members, too_many = ranged
+            return self._group_result(
+                forms, GroupForm.RANGE, RANGE_SEPARATOR, [self._plain(t) for t in members], too_many
+            )
+        if (items := list_items(canonical)) is not None:
+            return self._list_group(forms, items, limit)
+        return self._suffix_group(forms, limit)
+
+    def _plain(self, text: str) -> tuple[str, ParsedIdentifier | None]:
+        return text, self._member(text)
+
+    def _list_group(
+        self, forms: NormalizedForms, items: tuple[str, ...], limit: int
+    ) -> ParsedIdentifier | None:
+        if not items[0]:
+            return None
+        first = self._member(items[0])
+        if first is None:
+            return None
+        if len(items) > limit:
+            return self._group_result(forms, GroupForm.LIST, LIST_SEPARATOR, [], True)
+        members: list[tuple[str, ParsedIdentifier | None]] = [(items[0], first)]
+        for item in items[1:]:
+            alone = self._member(item) if item else None
+            inherited = (
+                first.connection_point is not None
+                and bool(item)
+                and is_valid_label(item)
+                and (alone is None or alone.kind in _BARE_KINDS)
+            )
+            if inherited:
+                assert first.connection_point is not None
+                text = inherit(items[0], first.connection_point, item)
+                members.append((text, self._member(text)))
+            else:
+                members.append((item, alone))
+        return self._group_result(forms, GroupForm.LIST, LIST_SEPARATOR, members, False)
+
+    def _suffix_group(self, forms: NormalizedForms, limit: int) -> ParsedIdentifier | None:
+        canonical = forms.canonical
+        for separator, kinds in self._rules.groups.suffix_lists.items():
+            if separator not in canonical:
+                continue
+            head, *tails = canonical.split(separator)
+            first = self._member(head) if head else None
+            if first is None or first.kind not in kinds:
+                continue
+            if len(tails) + 1 > limit:
+                return self._group_result(forms, GroupForm.SUFFIX_LIST, separator, [], True)
+            texts = suffix_members(head, tuple(tails))
+            if texts is None:
+                continue
+            members = [(head, first), *(self._plain(t) for t in texts[1:])]
+            return self._group_result(forms, GroupForm.SUFFIX_LIST, separator, members, False)
+        return None
+
+    def _group_result(
+        self,
+        forms: NormalizedForms,
+        form: GroupForm,
+        separator: str,
+        read: list[tuple[str, ParsedIdentifier | None]],
+        too_many: bool,
+    ) -> ParsedIdentifier:
+        issues: list[str] = [ISSUE_TOO_MANY] if too_many else []
+        for text, identifier in read:
+            if not text:
+                issues.append(ISSUE_EMPTY_MEMBER)
+            elif identifier is None:
+                issues.append(ISSUE_MEMBER_UNREADABLE)
+            elif not identifier.valid:
+                issues.append(ISSUE_MEMBER_INVALID)
+        members = tuple(GroupMember(text, identifier) for text, identifier in read)
+        conventions = {m.identifier.convention for m in members if m.identifier is not None}
+        keys = dedupe(
+            [forms.canonical, *(m.identifier.forms.canonical for m in members if m.identifier)]
+        )[:MAX_GROUP_KEYS]
+        return ParsedIdentifier(
+            kind=IdentifierKind.IDENTIFIER_GROUP,
+            convention=conventions.pop() if len(conventions) == 1 else None,
+            forms=NormalizedForms(forms.original, forms.canonical, keys),
+            valid=not issues,
+            issues=tuple(dict.fromkeys(issues)),
+            group=IdentifierGroup(form, separator, members),
+        )
 
     def _is_rating(self, forms: NormalizedForms, text: str) -> bool:
         """A supply voltage label (``24VDC``, ``+24V``, ``0V``, or the profile's) is a voltage
@@ -231,18 +352,19 @@ class IdentifierParser:
             for candidate in split_candidates(token):  # F3 (gap 34): a word may hold several
                 found = self.parse(candidate)
                 if found is not None:
-                    parsed += 1
-                    if ISSUE_NON_ASCII not in found.issues:
-                        self._count(found, conventions, families, formats)
+                    for reading in _readings(found):  # F3: each member of a group is one
+                        parsed += 1
+                        if ISSUE_NON_ASCII not in reading.issues:
+                            self._count(reading, conventions, families, formats)
                 if probe is not None and _may_be_additive(candidate):
                     extra = probe.parse(candidate)
-                    if (
-                        extra is not None
-                        and extra.convention in ADDITIVE_CONVENTIONS
-                        and extra.convention not in enabled
-                        and _is_evidence(extra, self._rules)
-                    ):
-                        conventions[extra.convention] += 1
+                    for reading in () if extra is None else _readings(extra):
+                        if (
+                            reading.convention in ADDITIVE_CONVENTIONS
+                            and reading.convention not in enabled
+                            and _is_evidence(reading, self._rules)
+                        ):
+                            conventions[reading.convention] += 1
         return ConventionTally(
             conventions=MappingProxyType(dict(sorted(conventions.items()))),
             plc_families=MappingProxyType(dict(sorted(families.items()))),
@@ -267,6 +389,13 @@ class IdentifierParser:
             families[found.plc.family] += 1
         if found.kind is IdentifierKind.CROSS_REFERENCE and found.variant is not None:
             formats[found.variant] += 1
+
+
+def _readings(found: ParsedIdentifier) -> tuple[ParsedIdentifier, ...]:
+    """What a parse counts: the identifier itself, or for a group each member that read (F3)."""
+    if found.group is None:
+        return (found,)
+    return tuple(m.identifier for m in found.group.members if m.identifier is not None)
 
 
 def _may_be_additive(token: str) -> bool:

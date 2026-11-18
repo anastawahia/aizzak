@@ -115,8 +115,8 @@ def test_a_strict_kind_never_shares_a_key_with_another_kind() -> None:
     owners: dict[str, set[K]] = {}
     for text in sorted(_tokens()):
         found = PARSER.parse(text)
-        if found is None or found.kind is K.PLC_ADDRESS:
-            continue
+        if found is None or found.kind in (K.PLC_ADDRESS, K.IDENTIFIER_GROUP):
+            continue  # F3: a group's search keys ARE its members' (FR-ID-19), so it shares them
         if sum(a.prefix == "-" for a in found.aspects) > 1:
             continue  # QA-N1 (below): a chain of several `-` aspects
         for key in found.forms.search_keys:
