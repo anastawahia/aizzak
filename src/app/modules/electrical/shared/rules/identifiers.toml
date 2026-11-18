@@ -141,7 +141,8 @@ non_evidence_suffixes = ["A"]
 # Selected by NAME in the profile. First match in file order wins.
 [wire_numbers]
 sequential = '^W?\d{1,5}$'
-page_column = '^\d{1,4}\.\d{1,2}(-\d{1,3})?$'
+# F3 (gap 9): page 0 is no page here either, so 0.7 is no wire (it is an accuracy class).
+page_column = '^(?!0+\.)\d{1,4}\.\d{1,2}(-\d{1,3})?$'
 voltage_based = '^(?:(?:L[1-3]|[UVW])\d{1,3}(?:-\d{1,3})?|L[1-3]-\d{1,3})$'
 
 # F3 (gaps 1, 18, 30): vendor wire-number patterns, read ONLY when a profile names them (a
@@ -166,10 +167,11 @@ max_members = 64
 suffix_lists = { "/" = ["kks_tag"], "\\" = ["letter_code"] }
 
 [cross_references]
-slash_page_dot_column = '^/(\d{1,4})\.(\d{1,2})$'
-page_dot_column = '^(\d{1,4})\.(\d{1,2})$'
-prefixed_slash = '^(=[A-Z0-9]+)/(\d{1,4})\.(\d{1,2})$'
-page_slash_column = '^(\d{1,4})/(\d{1,2})$'
+# F3 (gap 9): page 0 is no page, so an accuracy class (0.7) is no cross-reference.
+slash_page_dot_column = '^/(?!0+\.)(\d{1,4})\.(\d{1,2})$'
+page_dot_column = '^(?!0+\.)(\d{1,4})\.(\d{1,2})$'
+prefixed_slash = '^(=[A-Z0-9]+)/(?!0+\.)(\d{1,4})\.(\d{1,2})$'
+page_slash_column = '^(?!0+/)(\d{1,4})/(\d{1,2})$'
 
 # label -> pole role (FR-ID-07)
 [connection_points]

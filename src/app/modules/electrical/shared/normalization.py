@@ -89,9 +89,14 @@ def _fold(text: str) -> str:
     )
 
 
+def folded(text: str) -> str:
+    """The text folded as ``canonical_form`` folds it (NFKC, digits, dashes, no whitespace, no
+    hidden characters) but NOT upper-cased: a rating's unit is read in its written case (F3)."""
+    return "".join(ch for ch in _fold(text) if not _is_space(ch) and not _is_hidden(ch))
+
+
 def canonical_form(text: str) -> str:
-    kept = "".join(ch for ch in _fold(text) if not _is_space(ch) and not _is_hidden(ch))
-    return kept.upper()
+    return folded(text).upper()
 
 
 def text_issues(text: str) -> tuple[str, ...]:

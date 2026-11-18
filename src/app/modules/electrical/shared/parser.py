@@ -56,10 +56,12 @@ from app.modules.electrical.shared.normalization import (
     ISSUE_NON_ASCII,
     NON_INVALIDATING_ISSUES,
     canonical_form,
+    folded,
     normalize,
     text_issues,
 )
 from app.modules.electrical.shared.plc_siemens import parse_plc_address
+from app.modules.electrical.shared.ratings import read_rating
 from app.modules.electrical.shared.reference_designation import parse_reference_designation
 from app.modules.electrical.shared.terminals import parse_bridge, parse_terminal
 from app.modules.electrical.shared.voltages import parse_voltage
@@ -161,6 +163,8 @@ class IdentifierParser:
     def _first(
         self, forms: NormalizedForms, hint: IdentifierKind | None, text: str
     ) -> ParsedIdentifier | None:
+        if hint is None and self._is_rating(forms, text):
+            return None  # F3 (FR-ID-20): a value with a unit is a rating, never an identifier
         candidates: Iterable[_Parse] = (
             _HINTED[hint]
             if hint is not None and hint in _HINTED
@@ -173,6 +177,13 @@ class IdentifierParser:
                     found = replace(found, alternatives=alternatives)
                 return _flag_text(found, text_issues(text))
         return None
+
+    def _is_rating(self, forms: NormalizedForms, text: str) -> bool:
+        """A supply voltage label (``24VDC``, ``+24V``, ``0V``, or the profile's) is a voltage
+        (FR-ID-08), whatever its shape; any other value with a unit of ``[ratings]`` is a rating."""
+        if forms.canonical in self._rules.voltage_labels:
+            return False
+        return read_rating(folded(text), self._rules) is not None
 
     def _parse_non_ascii(
         self, text: str, forms: NormalizedForms, hint: IdentifierKind | None

@@ -8,7 +8,9 @@ from dataclasses import replace
 import pytest
 
 from app.modules.electrical.shared.kinds import Convention, IdentifierKind, ParsedIdentifier
+from app.modules.electrical.shared.normalization import folded
 from app.modules.electrical.shared.parser import IdentifierParser
+from app.modules.electrical.shared.ratings import Rating, read_rating
 from tests.eval.electrical.m04_identifiers import (
     expected_shape,
     load_cases,
@@ -143,3 +145,86 @@ def test_f3_ac_5_a_digits_first_terminal_is_no_ansi_under_nfpa() -> None:
     assert nfpa.parse("3X-41") is None
     iec = _read("3X-41")
     assert iec.kind is IdentifierKind.TERMINAL and iec.convention is Convention.IEC_81346
+
+
+# --- ratings are no identifiers (F3-AC-7, 8) ---------------------------------------------
+
+_EVERYTHING = parser_for(
+    Convention.IEC_81346,
+    Convention.GBT_5094,
+    Convention.CN_LETTER_CODES,
+    Convention.NFPA_JIC,
+    Convention.KKS,
+    Convention.ANSI,
+)
+_CN = parser_for(Convention.CN_LETTER_CODES)
+
+
+@pytest.mark.parametrize(
+    "text", ["37MVA", "47Hz", "17VA", "29kA", "2PH", "7KW", "13mA", "7-29kV", "0.7kV"]
+)
+def test_f3_ac_7_ratings_are_no_identifiers(text: str) -> None:
+    assert _EVERYTHING.parse(text) is None
+    assert parser_for(Convention.IEC_81346).parse(text) is None
+
+
+def test_f3_ac_7_a_unit_that_is_a_letter_code_matches_as_written() -> None:
+    assert _CN.parse("37kV") is None
+    assert _CN.parse("29kA") is None
+    for text in ("3KA", "37KV"):  # the shape of a relay, not the rules' unit
+        found = _read(text, _CN)
+        assert found.kind is IdentifierKind.LETTER_CODE, text
+        assert found.convention is Convention.CN_LETTER_CODES
+    # the case does not matter when no enabled table has the code
+    assert parser_for(Convention.IEC_81346).parse("3KA") is None
+
+
+def test_f3_ac_7_a_rating_is_a_value_of_its_own() -> None:
+    rules = _EVERYTHING.rules
+    assert read_rating(folded("7-29kV"), rules) == Rating("7-29", "kV")
+    assert read_rating(folded("0.7 KW"), rules) == Rating("0.7", "kW")
+    for text in ("", "kV", "37", "37k", "37xyz", "37kV2", "1.2.3kV", "1234567kV", "37 kV x"):
+        assert read_rating(folded(text), rules) is None, text
+
+
+@pytest.mark.parametrize("text", ["24VDC", "+24V", "0V"])
+def test_f3_ac_8_voltage_labels_win(text: str) -> None:
+    found = _read(text, _EVERYTHING)
+    assert found.kind is IdentifierKind.VOLTAGE and found.valid
+
+
+def test_f3_ac_8_a_voltage_label_the_profile_added_stays_a_voltage() -> None:
+    plain = parser_for(Convention.IEC_81346)
+    assert plain.parse("12VDC") is None  # a rating, until the profile says it is a label
+    added = parser_for(Convention.IEC_81346, extra_voltage_labels=("12VDC",))
+    assert _read("12VDC", added).kind is IdentifierKind.VOLTAGE
+
+
+def test_a_rating_with_a_hint_is_left_to_the_hinted_reader() -> None:
+    """The barrier is for the text without context only: a caller with a hint resolved it."""
+    found = _ANSI.parse("37MVA", hint=_DEVICE)
+    assert found is not None and found.kind is _DEVICE and not found.valid
+
+
+# --- page zero is no page (F3-AC-10) ------------------------------------------------------
+
+
+@pytest.mark.parametrize("text", ["0.7", "0.9", "/0.7", "00.5", "0/3"])
+def test_f3_ac_10_page_zero_is_no_page(text: str) -> None:
+    assert IdentifierParser(load_rules()).parse(text) is None, text
+
+
+@pytest.mark.parametrize(
+    ("text", "variant"),
+    [
+        ("12.3", "page_dot_column"),
+        ("/12.3", "slash_page_dot_column"),
+        ("=A1/12.3", "prefixed_slash"),
+        ("12/3", "page_slash_column"),
+        ("10.05", "page_dot_column"),
+    ],
+)
+def test_f3_ac_10_other_pages_read_as_before(text: str, variant: str) -> None:
+    found = IdentifierParser(load_rules()).parse(text)
+    assert found is not None and found.kind is IdentifierKind.CROSS_REFERENCE
+    assert found.variant == variant

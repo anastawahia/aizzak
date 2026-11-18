@@ -455,3 +455,14 @@ def test_the_letters_first_table_is_optional_and_checked() -> None:
     ):
         with pytest.raises(RuleError):
             IdentifierRules.from_mapping(_mutated(mutate))
+
+
+def test_f3_ac_9_a_unit_the_file_lacks_is_no_barrier() -> None:
+    """51KVA reads as an ANSI function 51 with an unknown suffix until kVA is a rating unit."""
+    only_hertz = IdentifierRules.from_mapping(_mutated(lambda d: d["ratings"].update(units=["Hz"])))
+    narrowed = only_hertz.narrowed(_selection(conventions=frozenset({Convention.ANSI})))
+    before = IdentifierParser(narrowed).parse("51KVA")
+    assert before is not None and before.kind is IdentifierKind.ANSI_DEVICE
+    assert before.issues == ("ansi.unknown_suffix",)
+    restored = load_rules().narrowed(_selection(conventions=frozenset({Convention.ANSI})))
+    assert IdentifierParser(restored).parse("51KVA") is None
