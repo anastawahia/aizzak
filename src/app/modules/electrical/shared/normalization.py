@@ -31,6 +31,19 @@ from app.modules.electrical.shared.kinds import NormalizedForms
 _DASHES = dict.fromkeys(
     (0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015, 0x2212, 0xFE58, 0xFE63, 0xFF0D), "-"
 )
+# F3 (gap 34): the ideographic comma and its variants fold to "," (the item separator of a
+# list), the prime and double prime fold to ' and " (the point of a terminal, 1X-37')
+_PUNCTUATION = {
+    0x3001: ",", 0xFE51: ",", 0xFF64: ",",  # ideographic comma, small, half-width
+    0x2032: "'", 0x2033: '"',  # prime, double prime
+}  # fmt: skip
+_ENCLOSED = (
+    range(0x2460, 0x2500),  # circled, parenthesised and dotted numbers; enclosed alphanumerics
+    range(0x2776, 0x2794),  # dingbat circled numbers
+    range(0x3251, 0x3260),  # circled numbers 21..35
+    range(0x32B1, 0x32C0),  # circled numbers 36..50
+    range(0x1F100, 0x1F10D),  # digit full stop / comma
+)
 _LEADING_ZEROS = re.compile(r"(?<!\d)0+(?=\d)", re.ASCII)
 # a plain tag: letters, ONE separator, digits (``F-0001``); T-21 says it equals ``F0001``.
 # Matched on the canonical form, so ``-K-5`` (a designation) is never read as the tag ``K5``.
@@ -80,7 +93,9 @@ def _is_hidden(ch: str) -> bool:
 
 
 def _fold(text: str) -> str:
-    folded = unicodedata.normalize("NFKC", text).translate(_DASHES)
+    # the punctuation first as well: NFKC turns a double prime into two primes
+    folded = unicodedata.normalize("NFKC", text.translate(_PUNCTUATION))
+    folded = folded.translate(_DASHES).translate(_PUNCTUATION)
     return "".join(
         ch
         if ch.isascii()
@@ -97,6 +112,12 @@ def folded(text: str) -> str:
 
 def canonical_form(text: str) -> str:
     return folded(text).upper()
+
+
+def has_enclosed_number(text: str) -> bool:
+    """F3 (gap 14): a circled, parenthesised or dotted number (a page marker, a footnote): NFKC
+    would turn it into a plain number and read it as a wire."""
+    return any(any(ord(ch) in block for block in _ENCLOSED) for ch in text)
 
 
 def text_issues(text: str) -> tuple[str, ...]:

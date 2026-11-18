@@ -57,6 +57,7 @@ from app.modules.electrical.shared.normalization import (
     NON_INVALIDATING_ISSUES,
     canonical_form,
     folded,
+    has_enclosed_number,
     normalize,
     text_issues,
 )
@@ -64,6 +65,7 @@ from app.modules.electrical.shared.plc_siemens import parse_plc_address
 from app.modules.electrical.shared.ratings import read_rating
 from app.modules.electrical.shared.reference_designation import parse_reference_designation
 from app.modules.electrical.shared.terminals import parse_bridge, parse_terminal
+from app.modules.electrical.shared.tokens import split_candidates
 from app.modules.electrical.shared.voltages import parse_voltage
 from app.modules.electrical.shared.wire_numbers import parse_wire_number
 
@@ -153,6 +155,8 @@ class IdentifierParser:
         valid=False when it is one, malformed (FR-ID-10)."""
         if not text.strip() or len(text) > MAX_TEXT_CHARS:
             return None
+        if hint is None and has_enclosed_number(text):
+            return None  # F3 (gap 14): ⑰ is a marker, not wire 17 (NFKC would fold it to 17)
         forms = normalize(text)
         if len(forms.canonical) > MAX_TEXT_CHARS or not any(ch.isalnum() for ch in forms.canonical):
             return None
@@ -224,20 +228,21 @@ class IdentifierParser:
         seen = parsed = 0
         for token in tokens:
             seen += 1
-            found = self.parse(token)
-            if found is not None:
-                parsed += 1
-                if ISSUE_NON_ASCII not in found.issues:
-                    self._count(found, conventions, families, formats)
-            if probe is not None and _may_be_additive(token):
-                extra = probe.parse(token)
-                if (
-                    extra is not None
-                    and extra.convention in ADDITIVE_CONVENTIONS
-                    and extra.convention not in enabled
-                    and _is_evidence(extra, self._rules)
-                ):
-                    conventions[extra.convention] += 1
+            for candidate in split_candidates(token):  # F3 (gap 34): a word may hold several
+                found = self.parse(candidate)
+                if found is not None:
+                    parsed += 1
+                    if ISSUE_NON_ASCII not in found.issues:
+                        self._count(found, conventions, families, formats)
+                if probe is not None and _may_be_additive(candidate):
+                    extra = probe.parse(candidate)
+                    if (
+                        extra is not None
+                        and extra.convention in ADDITIVE_CONVENTIONS
+                        and extra.convention not in enabled
+                        and _is_evidence(extra, self._rules)
+                    ):
+                        conventions[extra.convention] += 1
         return ConventionTally(
             conventions=MappingProxyType(dict(sorted(conventions.items()))),
             plc_families=MappingProxyType(dict(sorted(families.items()))),
