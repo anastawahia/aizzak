@@ -1,7 +1,7 @@
 # Identifier rules (FR-ID-01, 03..08, 13). DATA, not code (INC1-D-19): any change bumps
 # `version`. Regular expressions are written and reviewed here; a document's profile
 # selects them by NAME and never carries one.
-version = "1.1.0"
+version = "1.2.0"
 
 [reference_designation]
 aspects = ["=", "+", "-"]
@@ -42,6 +42,14 @@ X = ["cn_letter_codes", "iec_81346", "gbt_5094"]
 XT = ["cn_letter_codes"]
 TB = ["cn_letter_codes"]
 
+# F3 (gap 40), like [terminals.digits_first] but for the form where the strip code comes first
+# (X7:41, X7.41, X7-41): the device conventions it reads under, the first enabled one wins. A
+# prefix not listed reads as before (XT: Chinese codes, TB: NFPA/JIC, other: IEC 81346, GB/T).
+[terminals.letters_first]
+X = ["iec_81346", "gbt_5094", "cn_letter_codes"]
+XT = ["cn_letter_codes"]
+TB = ["nfpa_jic"]
+
 # FR-ID-18, D-36: digit/letter pairs OCR confuses, as two-character strings (digit, letter).
 # INC-1 uses them only to NAME why a KKS tag is invalid; the correction itself is INC-2.
 [confusables]
@@ -55,6 +63,12 @@ excluded_letters = []  # A-3: letters KKS never uses in a letter position; empty
 # D-36: the shallowest level the tally counts as evidence of KKS (2 = an equipment tag).
 # A system-level shape alone (two digits, three letters, two digits) also fits other text.
 evidence_min_level = 2
+# F3 (gap 33): one separator a tag may carry between two parts (20XYZ10AB123-CD45). The joined
+# form is a search key, so the two spellings meet.
+part_separators = ["-"]
+# F3: the shortest text a near miss is reported for (kks.malformed). A data key, because the
+# system_code form (added below) is shorter than every earlier form.
+near_miss_min_length = 7
 
 [kks.prefixes]  # the identification types, when a tag is written with one (A-8)
 process = "="
@@ -129,6 +143,27 @@ non_evidence_suffixes = ["A"]
 sequential = '^W?\d{1,5}$'
 page_column = '^\d{1,4}\.\d{1,2}(-\d{1,3})?$'
 voltage_based = '^(?:(?:L[1-3]|[UVW])\d{1,3}(?:-\d{1,3})?|L[1-3]-\d{1,3})$'
+
+# F3 (gaps 1, 18, 30): vendor wire-number patterns, read ONLY when a profile names them (a
+# document's rules without a selection never read one). A named pattern that matches wins over
+# an ANSI reading without context, as a pinned cross-reference format does; the ANSI reading is
+# kept as an alternative.
+[wire_numbers_opt_in]
+digits_letter = '^\d{1,3}[A-Z]$'
+letter_digits = '^[A-Z]\d{1,3}$'
+
+# F3 (gaps 4, 15): a number with one of these units is a rating, never an identifier (FR-ID-20).
+# Written in SI case. A unit whose upper-case form is a letter code an enabled table has (kV,
+# kA) matches only as written: 37kV is a rating, 3KA is a relay.
+[ratings]
+units = ["kV", "VA", "kVA", "MVA", "kW", "MW", "var", "kvar", "Mvar", "Hz", "kA", "mA", "VDC", "VAC", "PH"]
+
+# F3 (FR-ID-19): lists and ranges in one text, expanded into identifiers.
+[groups]
+max_members = 64
+# separator -> the kinds the FIRST item must read as; a later item of digits only replaces the
+# first item's trailing digits (20XYZ10AB131/2/3 -> ...131, ...132, ...133)
+suffix_lists = { "/" = ["kks_tag"], "\\" = ["letter_code"] }
 
 [cross_references]
 slash_page_dot_column = '^/(\d{1,4})\.(\d{1,2})$'

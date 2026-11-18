@@ -20,6 +20,7 @@ class IdentifierKind(StrEnum):
     VOLTAGE = "voltage"  # L1, PE, +24V (FR-ID-08)
     KKS_TAG = "kks_tag"  # 20XYZ10AB123, =20XYZ10AB123 (FR-ID-15, D-36)
     ANSI_DEVICE = "ansi_device"  # 87T, 50BF, 27-1, 50/51 (FR-ID-16, D-36)
+    IDENTIFIER_GROUP = "identifier_group"  # X7:41,42,43 ; QS7-QS9 ; 20XYZ10AB131/2/3 (FR-ID-19)
 
 
 class Convention(StrEnum):  # FR-ID-13
@@ -105,6 +106,12 @@ class PlcAddress:
     db_number: int | None
 
 
+class GroupForm(StrEnum):  # F3, FR-ID-19
+    LIST = "list"  # X7:41,42,43 ; QS7,QS8 (a later bare label inherits the first item's head)
+    RANGE = "range"  # QS7-QS9 ; 38Y-43Y (same head and tail, the number counts up)
+    SUFFIX_LIST = "suffix_list"  # 20XYZ10AB131/2/3 ; QS7\8 (digits replace the trailing digits)
+
+
 @dataclass(frozen=True, slots=True)
 class NormalizedForms:  # FR-ID-09
     original: str  # exactly as it appeared (DATA-06, NFR-I18N-03)
@@ -142,6 +149,8 @@ class ParsedIdentifier:
     # (bare number / ANSI, compound / cross-reference, prefixed KKS / IEC). Set only without
     # a hint: a caller with a hint has resolved it. Empty for every other kind (no change).
     alternatives: tuple[IdentifierKind, ...] = ()
+    # Additive (F3), last and defaulted: the members of an IDENTIFIER_GROUP, None otherwise.
+    group: IdentifierGroup | None = None
 
     @property
     def needs_context(self) -> bool:
@@ -154,11 +163,24 @@ class ParsedIdentifier:
 
 
 @dataclass(frozen=True, slots=True)
+class GroupMember:
+    text: str  # the member as expanded, canonical: "X7:42"
+    identifier: ParsedIdentifier | None  # None: the member alone is no identifier
+
+
+@dataclass(frozen=True, slots=True)
+class IdentifierGroup:
+    form: GroupForm
+    separator: str  # "," "-" "/" "\\"
+    members: tuple[GroupMember, ...]  # written order; empty when there would be too many
+
+
+@dataclass(frozen=True, slots=True)
 class ConventionTally:
     """What a bag of tokens says about the drawing's conventions (FR-ING-12)."""
 
     conventions: Mapping[Convention, int]
     plc_families: Mapping[PlcFamily, int]
     cross_reference_formats: Mapping[str, int]
-    identifiers: int  # tokens that parsed as anything
+    identifiers: int  # readings: a token that parsed, and each member of a group that read
     tokens: int  # tokens seen

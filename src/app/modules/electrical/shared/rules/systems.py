@@ -17,7 +17,12 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Final
 
-from app.modules.electrical.shared.kinds import DEVICE_CONVENTIONS, Convention, KksClass
+from app.modules.electrical.shared.kinds import (
+    DEVICE_CONVENTIONS,
+    Convention,
+    IdentifierKind,
+    KksClass,
+)
 from app.modules.electrical.shared.normalization import canonical_form, text_issues
 from app.modules.electrical.shared.rules.errors import RuleError
 
@@ -43,8 +48,24 @@ _MASK: Final = re.compile(r"[NA]+[na]*", re.ASCII)
 _SUFFIX: Final = re.compile(r"[A-Z]{1,3}", re.ASCII)
 _PREFIX_CHARS: Final = frozenset("=+")
 _KKS_KEYS: Final = frozenset(
-    {"excluded_letters", "evidence_min_level", "prefixes", "parts", "forms"}
+    {
+        "excluded_letters",
+        "evidence_min_level",
+        "prefixes",
+        "parts",
+        "forms",
+        "part_separators",
+        "near_miss_min_length",
+    }
 )
+MAX_RATING_UNITS: Final = 32
+MAX_RATING_UNIT_CHARS: Final = 5
+MAX_GROUP_MEMBERS: Final = 64
+GROUP_SEPARATORS: Final = frozenset({"/", "\\"})
+KKS_PART_SEPARATOR_CHARS: Final = frozenset({"-", "."})
+MAX_NEAR_MISS_LENGTH: Final = 32
+_GROUP_KEYS: Final = frozenset({"max_members", "suffix_lists"})
+_RATING_KEYS: Final = frozenset({"units"})
 _ANSI_KEYS: Final = frozenset({"max_compound", "suffixes", "non_evidence_suffixes", "functions"})
 _OPTIONAL: Final = frozenset("na")
 _PART_KEYS: Final = frozenset({"level", "mask"})
@@ -76,6 +97,10 @@ class KksRules:
     forms: tuple[KksForm, ...]  # file order: the first full match wins
     excluded_letters: frozenset[str]
     evidence_min_level: int = 2  # D-36: the shallowest level the tally counts as KKS evidence
+    # F3 (gap 33): the one character a tag may carry between two parts (20XYZ10AB123-CD45)
+    part_separators: frozenset[str] = frozenset()
+    # F3: the shortest text a near miss is reported for (kks.malformed); replaces ``shortest``
+    near_miss_min_length: int = 7
     # derived once from ``parts`` and ``forms``, so the parser never rebuilds them per token
     spec: KksSpec = field(init=False, repr=False, compare=False)
     shortest: int = field(init=False, repr=False, compare=False)  # fewest characters of a form
@@ -96,6 +121,25 @@ class AnsiRules:
     functions: Mapping[int, str]  # number -> our class name
     max_compound: int  # 2..3
     non_evidence_suffixes: frozenset[str] = frozenset()  # D-36: a rating's letter (32A)
+
+
+@dataclass(frozen=True, slots=True)
+class RatingRules:
+    """F3 (FR-ID-20): the units that make a number a rating, never an identifier."""
+
+    units: tuple[str, ...]  # as written in the file (SI case)
+    folded_units: frozenset[str] = field(init=False, repr=False, compare=False)  # upper-cased
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "folded_units", frozenset(u.upper() for u in self.units))
+
+
+@dataclass(frozen=True, slots=True)
+class GroupRules:
+    """F3 (FR-ID-19): the bound of a list or range and the kinds a suffix list may follow."""
+
+    max_members: int  # 2..64
+    suffix_lists: Mapping[str, frozenset[IdentifierKind]]  # "/" -> {KKS_TAG}
 
 
 def _table(data: Mapping[str, object], key: str, where: str) -> Mapping[str, object]:
@@ -222,7 +266,63 @@ def kks_from_mapping(data: Mapping[str, object]) -> KksRules:
         evidence_min_level=_int(
             data.get("evidence_min_level"), "kks.evidence_min_level", 1, MAX_KKS_LEVEL
         ),
+        part_separators=_kks_part_separators(data),
+        near_miss_min_length=_int(
+            data.get("near_miss_min_length"), "kks.near_miss_min_length", 1, MAX_NEAR_MISS_LENGTH
+        ),
     )
+
+
+def _kks_part_separators(data: Mapping[str, object]) -> frozenset[str]:
+    raw = _list(data, "part_separators", "kks")
+    if not all(isinstance(x, str) and x in KKS_PART_SEPARATOR_CHARS for x in raw):
+        raise RuleError("[kks] part_separators must be single characters from - .")
+    if len(set(raw)) != len(raw):
+        raise RuleError("[kks] part_separators must be unique")
+    return frozenset(str(x) for x in raw)
+
+
+def ratings_from_mapping(data: Mapping[str, object]) -> RatingRules:
+    _only_keys(data, _RATING_KEYS, "ratings")
+    units = _list(data, "units", "ratings")
+    if not 1 <= len(units) <= MAX_RATING_UNITS:
+        raise RuleError(f"[ratings] units needs 1..{MAX_RATING_UNITS} entries")
+    for unit in units:
+        if (
+            not isinstance(unit, str)
+            or not 1 <= len(unit) <= MAX_RATING_UNIT_CHARS
+            or not unit.isascii()
+            or not unit.isalpha()
+        ):
+            raise RuleError(f"[ratings] each unit is 1..{MAX_RATING_UNIT_CHARS} ASCII letters")
+    if len({str(u).upper() for u in units}) != len(units):
+        raise RuleError("[ratings] units must be unique, ignoring case")
+    return RatingRules(tuple(str(u) for u in units))
+
+
+def groups_from_mapping(data: Mapping[str, object]) -> GroupRules:
+    _only_keys(data, _GROUP_KEYS, "groups")
+    max_members = _int(data.get("max_members"), "groups.max_members", 2, MAX_GROUP_MEMBERS)
+    raw = data.get("suffix_lists")
+    if not isinstance(raw, Mapping):
+        raise RuleError("[groups] suffix_lists must be a table")
+    out: dict[str, frozenset[IdentifierKind]] = {}
+    for separator, names in raw.items():
+        if separator not in GROUP_SEPARATORS:
+            raise RuleError("[groups] suffix_lists keys must be / or a backslash")
+        if not isinstance(names, list | tuple) or not names:
+            raise RuleError("[groups] suffix_lists values must be non-empty lists of kinds")
+        kinds: set[IdentifierKind] = set()
+        for name in names:
+            try:
+                kind = IdentifierKind(str(name))
+            except ValueError:
+                raise RuleError("[groups] suffix_lists names an unknown kind") from None
+            if kind is IdentifierKind.IDENTIFIER_GROUP:
+                raise RuleError("[groups] a suffix list cannot hold groups")
+            kinds.add(kind)
+        out[separator] = frozenset(kinds)
+    return GroupRules(max_members, MappingProxyType(out))
 
 
 def ansi_from_mapping(data: Mapping[str, object]) -> AnsiRules:
@@ -274,27 +374,28 @@ def confusables_from_mapping(data: Mapping[str, object]) -> tuple[tuple[str, str
 
 
 def digits_first_from_mapping(
-    terminals: Mapping[str, object], prefixes: tuple[str, ...]
+    terminals: Mapping[str, object], prefixes: tuple[str, ...], key: str = "digits_first"
 ) -> Mapping[str, tuple[Convention, ...]]:
-    raw = terminals.get("digits_first", {})
+    """The per-prefix device conventions of a terminal form (``[terminals.digits_first]``, and
+    F3's ``[terminals.letters_first]``, which names the same kind of table)."""
+    raw = terminals.get(key, {})
+    where = f"[terminals.{key}]"
     if not isinstance(raw, Mapping):
-        raise RuleError("[terminals.digits_first] must be a table")
+        raise RuleError(f"{where} must be a table")
     out: dict[str, tuple[Convention, ...]] = {}
     for prefix, names in raw.items():
         if prefix not in prefixes:
-            raise RuleError("[terminals.digits_first] keys must be terminal prefixes")
+            raise RuleError(f"{where} keys must be terminal prefixes")
         if not isinstance(names, list | tuple) or not names or len(set(names)) != len(names):
-            raise RuleError(f"[terminals.digits_first] {prefix!r} must be a non-empty unique list")
+            raise RuleError(f"{where} {prefix!r} must be a non-empty unique list")
         conventions: list[Convention] = []
         for name in names:
             try:
                 convention = Convention(str(name))
             except ValueError:
-                raise RuleError(
-                    f"[terminals.digits_first] {prefix!r} names an unknown convention"
-                ) from None
+                raise RuleError(f"{where} {prefix!r} names an unknown convention") from None
             if convention not in DEVICE_CONVENTIONS:
-                raise RuleError(f"[terminals.digits_first] {prefix!r} must name device conventions")
+                raise RuleError(f"{where} {prefix!r} must name device conventions")
             conventions.append(convention)
         out[prefix] = tuple(conventions)
     return MappingProxyType(out)

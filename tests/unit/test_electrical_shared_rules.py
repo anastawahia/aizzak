@@ -35,10 +35,9 @@ def _raw() -> dict[str, Any]:
 
 def test_the_rules_file_is_packaged_and_versioned() -> None:
     rules = load_rules()
-    assert (
-        rules.version == _raw()["version"] == "1.1.0"
-    )  # D-36: the KKS, ANSI, confusables, digits-first tables
-    assert SHARED_VERSION == "1.3.0"  # D-36: two new kinds, the new order, still opt-in
+    assert rules.version == _raw()["version"] == "1.2.0"  # F3: ratings, groups, opt-in wires
+    assert SHARED_VERSION == "1.4.0"  # F3: identifier groups, the class rule, ratings
+    assert len(IdentifierKind) == 12  # F3: IDENTIFIER_GROUP is the twelfth kind
     assert rules.aspects == ("=", "+", "-")
     assert set(rules.extra_aspects) == {"==", "++", "&", "#"}
     assert rules.cn_letter_codes["KM"] == "contactor"
@@ -134,7 +133,7 @@ def test_the_hint_kind_values_are_stable() -> None:
     assert {k.value for k in IdentifierKind} == {
         "reference_designation", "letter_code", "terminal", "bridge", "wire_number",
         "plc_address", "cross_reference", "connection_point", "voltage", "kks_tag",
-        "ansi_device",
+        "ansi_device", "identifier_group",
     }  # fmt: skip
 
 
@@ -347,3 +346,112 @@ def test_s1_optional_positions_are_capped() -> None:
 
     assert IdentifierRules.from_mapping(_mutated(at_the_limit)).kks.forms[-1].name == "wide"
     assert load_rules().kks.forms  # the packaged rules are inside the limits
+
+
+# --- F3: ratings, groups, opt-in wire patterns, letters-first terminals, KKS keys ------
+
+
+def test_f3_ac_9_units_are_data_and_checked() -> None:
+    rules = load_rules()
+    assert "kV" in rules.ratings.units and "KV" in rules.ratings.folded_units
+    for mutate in (
+        lambda d: d.pop("ratings"),
+        lambda d: d["ratings"].pop("units"),
+        lambda d: d["ratings"].update(units=[]),
+        lambda d: d["ratings"].update(units="kV"),
+        lambda d: d["ratings"].update(units=["k\u00c5"]),  # not ASCII
+        lambda d: d["ratings"].update(units=["kVARhh"]),  # six letters
+        lambda d: d["ratings"].update(units=["kV", "KV"]),  # a repeat ignoring case
+        lambda d: d["ratings"].update(units=[f"u{chr(97 + i)}" for i in range(33)]),
+        lambda d: d["ratings"].update(units=["k1"]),
+        lambda d: d["ratings"].update(units=[7]),
+        lambda d: d["ratings"].update(surprise=1),
+    ):
+        with pytest.raises(RuleError) as raised:
+            IdentifierRules.from_mapping(_mutated(mutate))
+        assert "u\u00c5" not in str(raised.value) and "kVARhh" not in str(raised.value)
+
+
+def test_the_groups_table_is_required_and_checked() -> None:
+    rules = load_rules()
+    assert rules.groups.max_members == 64
+    assert rules.groups.suffix_lists["/"] == {IdentifierKind.KKS_TAG}
+    assert rules.groups.suffix_lists["\\"] == {IdentifierKind.LETTER_CODE}
+    for mutate in (
+        lambda d: d.pop("groups"),
+        lambda d: d["groups"].pop("max_members"),
+        lambda d: d["groups"].update(max_members=1),
+        lambda d: d["groups"].update(max_members=65),
+        lambda d: d["groups"].update(max_members=True),
+        lambda d: d["groups"].pop("suffix_lists"),
+        lambda d: d["groups"].update(suffix_lists={"|": ["kks_tag"]}),
+        lambda d: d["groups"].update(suffix_lists={"/": []}),
+        lambda d: d["groups"].update(suffix_lists={"/": ["nope"]}),
+        lambda d: d["groups"].update(suffix_lists={"/": ["identifier_group"]}),
+        lambda d: d["groups"].update(surprise=1),
+    ):
+        with pytest.raises(RuleError):
+            IdentifierRules.from_mapping(_mutated(mutate))
+
+
+def test_the_opt_in_wire_patterns_are_listed_but_never_read_unnarrowed() -> None:
+    rules = load_rules()
+    assert set(rules.opt_in_wire_number_patterns) == {"digits_letter", "letter_digits"}
+    assert not set(rules.opt_in_wire_number_patterns) & set(rules.wire_number_patterns)
+    assert rules.wire_number_pattern_names == (
+        set(rules.wire_number_patterns) | set(rules.opt_in_wire_number_patterns)
+    )
+    assert not rules.wire_number_pinned
+    named = rules.narrowed(_selection(wire_number_patterns=("sequential", "digits_letter")))
+    assert set(named.wire_number_patterns) == {"sequential", "digits_letter"}
+    assert named.wire_number_pinned
+    assert not rules.narrowed(_selection()).wire_number_pinned
+    with pytest.raises(RuleError):
+        rules.narrowed(_selection(wire_number_patterns=(".*",)))
+    # the table is optional (a rules file without it reads as before), a repeat name is refused
+    bare = IdentifierRules.from_mapping(_mutated(lambda d: d.pop("wire_numbers_opt_in")))
+    assert bare.opt_in_wire_number_patterns == {}
+    for mutate in (
+        lambda d: d["wire_numbers_opt_in"].update(sequential="^1$"),
+        lambda d: d["wire_numbers_opt_in"].update(bad="(unclosed"),
+        lambda d: d.update(wire_numbers_opt_in="x"),
+    ):
+        with pytest.raises(RuleError):
+            IdentifierRules.from_mapping(_mutated(mutate))
+
+
+def test_the_kks_f3_keys_are_required_and_checked() -> None:
+    kks = load_rules().kks
+    assert kks.part_separators == {"-"} and kks.near_miss_min_length == 7
+    for mutate in (
+        lambda d: d["kks"].pop("part_separators"),
+        lambda d: d["kks"].pop("near_miss_min_length"),
+        lambda d: d["kks"].update(part_separators="-"),
+        lambda d: d["kks"].update(part_separators=["--"]),
+        lambda d: d["kks"].update(part_separators=["/"]),
+        lambda d: d["kks"].update(part_separators=["-", "-"]),
+        lambda d: d["kks"].update(near_miss_min_length=0),
+        lambda d: d["kks"].update(near_miss_min_length=33),
+        lambda d: d["kks"].update(near_miss_min_length="7"),
+    ):
+        with pytest.raises(RuleError):
+            IdentifierRules.from_mapping(_mutated(mutate))
+    none = IdentifierRules.from_mapping(_mutated(lambda d: d["kks"].update(part_separators=[])))
+    assert none.kks.part_separators == frozenset()
+
+
+def test_the_letters_first_table_is_optional_and_checked() -> None:
+    rules = load_rules()
+    assert rules.terminal_letters_first["X"][-1] is Convention.CN_LETTER_CODES
+    bare = IdentifierRules.from_mapping(_mutated(lambda d: d["terminals"].pop("letters_first")))
+    assert bare.terminal_letters_first == {}
+    for mutate in (
+        lambda d: d["terminals"]["letters_first"].update(ZZ=["iec_81346"]),
+        lambda d: d["terminals"]["letters_first"].update(X=["nope"]),
+        lambda d: d["terminals"]["letters_first"].update(X=[]),
+        lambda d: d["terminals"]["letters_first"].update(X=["kks"]),
+        lambda d: d["terminals"]["letters_first"].update(X=["iec_81346", "iec_81346"]),
+        lambda d: d["terminals"].update(letters_first=["X"]),
+    ):
+        with pytest.raises(RuleError):
+            IdentifierRules.from_mapping(_mutated(mutate))

@@ -64,7 +64,7 @@ def parse_profile(rules: RuleSource, body: Mapping[str, object]) -> DrawingProfi
     packaged = rules.identifier_rules()
     try:
         profile = DrawingProfile.from_body(
-            body, known_patterns=frozenset(packaged.wire_number_patterns)
+            body, known_patterns=frozenset(packaged.wire_number_pattern_names)
         )
     except InvalidProfile as exc:
         raise invalid_profile(exc) from exc

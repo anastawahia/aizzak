@@ -31,12 +31,16 @@ from app.modules.electrical.shared.patterns import compiled
 from app.modules.electrical.shared.rules.errors import RuleError
 from app.modules.electrical.shared.rules.systems import (
     AnsiRules,
+    GroupRules,
     KksRules,
+    RatingRules,
     ansi_from_mapping,
     checked_ansi_suffixes,
     confusables_from_mapping,
     digits_first_from_mapping,
+    groups_from_mapping,
     kks_from_mapping,
+    ratings_from_mapping,
 )
 
 __all__ = ["IdentifierRules", "RuleError", "RuleSelection"]
@@ -95,6 +99,22 @@ class IdentifierRules:
     plc_families: frozenset[PlcFamily] = field(default_factory=lambda: frozenset(PlcFamily))
     connection_point_separator: str = ":"
     cross_reference_pinned: bool = False  # the profile chose ONE cross-reference format
+    opt_in_wire_number_patterns: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({})
+    )  # F3: vendor patterns, read only when a profile names them
+    wire_number_pinned: bool = False  # F3: the profile named its wire-number patterns
+    terminal_letters_first: Mapping[str, tuple[Convention, ...]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )  # F3 (gap 40): prefix -> conventions of the letters-first form
+    ratings: RatingRules = field(default_factory=lambda: RatingRules(()))  # F3, FR-ID-20
+    groups: GroupRules = field(
+        default_factory=lambda: GroupRules(64, MappingProxyType({}))
+    )  # F3, FR-ID-19
+
+    @property
+    def wire_number_pattern_names(self) -> frozenset[str]:
+        """Every name a profile may select: the default patterns and the opt-in ones."""
+        return frozenset(self.wire_number_patterns) | frozenset(self.opt_in_wire_number_patterns)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, object]) -> IdentifierRules:
@@ -115,7 +135,13 @@ class IdentifierRules:
         terminals = _table(data, "terminals")
         wire = _string_map(_table(data, "wire_numbers"), "wire_numbers")
         xref = _string_map(_table(data, "cross_references"), "cross_references")
-        for name, pattern in (*wire.items(), *xref.items()):
+        opt_in_raw = data.get("wire_numbers_opt_in", {})
+        if not isinstance(opt_in_raw, Mapping):
+            raise RuleError("rules table [wire_numbers_opt_in] must be a table")
+        opt_in = _string_map(opt_in_raw, "wire_numbers_opt_in")
+        if set(opt_in) & set(wire):
+            raise RuleError("a wire-number pattern name must not repeat in two tables")
+        for name, pattern in (*wire.items(), *opt_in.items(), *xref.items()):
             try:
                 compiled(pattern)
             except re.error as exc:
@@ -148,6 +174,12 @@ class IdentifierRules:
             confusables=confusables_from_mapping(_table(data, "confusables")),
             terminal_digits_first=digits_first_from_mapping(terminals, terminal_prefixes),
             connection_point_separator=separator,
+            opt_in_wire_number_patterns=MappingProxyType(opt_in),
+            terminal_letters_first=digits_first_from_mapping(
+                terminals, terminal_prefixes, "letters_first"
+            ),
+            ratings=ratings_from_mapping(_table(data, "ratings")),
+            groups=groups_from_mapping(_table(data, "groups")),
         )
 
     def narrowed(self, profile: RuleSelection) -> IdentifierRules:
@@ -176,7 +208,11 @@ class IdentifierRules:
             else self.extra_aspects
         )
         wire = (
-            _pick(self.wire_number_patterns, profile.wire_number_patterns, "wire-number pattern")
+            _pick(
+                {**self.wire_number_patterns, **self.opt_in_wire_number_patterns},
+                profile.wire_number_patterns,
+                "wire-number pattern",
+            )
             if profile.wire_number_patterns
             else self.wire_number_patterns
         )
@@ -204,6 +240,7 @@ class IdentifierRules:
             cross_reference_pinned=(
                 self.cross_reference_pinned or profile.cross_reference_format is not None
             ),
+            wire_number_pinned=(self.wire_number_pinned or bool(profile.wire_number_patterns)),
         )
         extras = narrowed._checked_voltage_labels(profile.extra_voltage_labels)
         return replace(
