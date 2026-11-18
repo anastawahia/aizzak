@@ -33,7 +33,6 @@ from typing import TYPE_CHECKING
 
 from app.modules.electrical.shared.ansi import (
     is_ansi_evidence,
-    is_bare_ansi_number,
     parse_ansi_compound,
     parse_ansi_compound_in_context,
     parse_ansi_device,
@@ -107,8 +106,11 @@ def _alternatives(
     cross-reference (either way round), a KKS tag with a prefix against an IEC designation."""
     canonical = forms.canonical
     if Convention.ANSI in rules.conventions:
-        if found.kind in _BARE_KINDS and is_bare_ansi_number(canonical):
-            return (IdentifierKind.ANSI_DEVICE,)
+        if (
+            found.kind in _BARE_KINDS
+            and parse_ansi_device_in_context(canonical, forms, rules) is not None
+        ):
+            return (IdentifierKind.ANSI_DEVICE,)  # F3: a bare number, or a wire a pattern read
         if found.kind is IdentifierKind.ANSI_DEVICE and found.ansi is not None:
             if (
                 len(found.ansi.functions) > 1

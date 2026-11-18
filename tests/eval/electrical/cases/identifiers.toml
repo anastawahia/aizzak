@@ -2614,14 +2614,13 @@ id = "c226"
 text = "12/3"
 select = { conventions = ["iec_81346", "ansi"] }
 source = "extra"
-kind = "ansi_device"
+kind = "cross_reference"
 valid = true
-convention = "ansi"
 aspects = []
-ansi = { functions = [{ number = 12, suffix = "" }, { number = 3, suffix = "" }] }
-alternatives = ["cross_reference"]
+variant = "page_slash_column"
+alternatives = ["ansi_device"]
 canonical = "12/3"
-search_keys = ["12/3", "12", "3"]
+search_keys = ["12/3"]
 
 [[case]]
 id = "c227"

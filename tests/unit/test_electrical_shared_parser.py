@@ -199,13 +199,17 @@ def test_f2_ac_7_ansi_on_changes_only_the_listed_ambiguities() -> None:
         if after["kind"] == before["kind"]:  # a bare number: only the alternative is added
             assert {k: v for k, v in after.items() if k != "alternatives"} == before
             assert after["alternatives"] == ["ansi_device"]
-    # the compound against the cross-reference, and nothing else; 1KM and 2QF stay letter codes
-    assert {text for text, kind in changed.items() if kind == "ansi_device"} == {"12/3"}
+    # F3 (class rule): no existing case reads as an ANSI device any more, and 12/3 (numbers
+    # outside the table) stays a cross-reference that gains the ANSI alternative. 1KM and 2QF
+    # stay letter codes.
+    assert {text for text, kind in changed.items() if kind == "ansi_device"} == set()
+    assert changed.get("12/3") == "cross_reference"
     for text in ("1KM", "2QF"):
         found = ansi_on.parse(text)
         assert found is not None and found.kind is IdentifierKind.LETTER_CODE
-    compound = ansi_on.parse("12/3")
-    assert compound is not None and compound.alternatives == (IdentifierKind.CROSS_REFERENCE,)
+    crossing = ansi_on.parse("12/3")
+    assert crossing is not None and crossing.kind is IdentifierKind.CROSS_REFERENCE
+    assert crossing.alternatives == (IdentifierKind.ANSI_DEVICE,)
 
 
 def test_the_probe_filter_checks_the_length_first() -> None:

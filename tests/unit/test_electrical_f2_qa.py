@@ -392,7 +392,8 @@ def test_a_suffix_is_membership_only_never_a_pattern() -> None:
     profile = _profile(device_function_numbers="ansi", ansi_suffixes=["QZ"])
     parser = IdentifierParser(RULES.narrowed(profile.rule_selection()))
     assert _is_ansi_valid(parser.parse("87QZ"))
-    for text in ("87W", "87WQZ", "87QQZ", "87QZ1"):
+    # F3: a suffix then ONE digit is an instance (87QZ1), so it is not in this list any more
+    for text in ("87W", "87WQZ", "87QQZ", "87QZ12"):
         found = parser.parse(text)
         assert not (found is not None and found.valid and found.kind is IdentifierKind.ANSI_DEVICE)
 
