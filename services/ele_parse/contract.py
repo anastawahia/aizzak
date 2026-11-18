@@ -18,6 +18,10 @@ MAX_BODY_BYTES: Final = 4_096
 MAX_RANGE_PAGES: Final = 1_000
 MAX_FONTS: Final = 32
 MAX_TOKEN_CHARS: Final = 32
+# F3 (gap 39): a word longer than MAX_TOKEN_CHARS is split at these characters (U+002C, U+FF0C,
+# U+3001, U+3002, U+FF1B, U+003B) and its pieces that fit are kept: a long list of tags is not
+# prose, it is several identifiers
+LONG_TOKEN_SPLIT: Final = frozenset(",\uff0c\u3001\u3002\uff1b;")
 MAX_FONT_NAME_CHARS: Final = 96
 MAX_METADATA_CHARS: Final = 512
 MAX_FONT_TYPE_CHARS: Final = 32

@@ -22,9 +22,11 @@ from typing import Any
 
 import pymupdf
 import pytest
-from services.ele_parse import app, child, contract, sandbox
+from services.ele_parse import SERVICE_VERSION, app, child, contract, sandbox
+from services.ele_parse import inspect as ele_inspect
 from services.ele_parse.__main__ import inspect_file, main
 
+from app.modules.electrical.drawings.domain.pipeline import PIPELINE_VERSION
 from tests.unit.support_electrical import FakePdfInspection
 
 WS_ID = "aaaaaaaa-1111-7111-8111-111111111111"
@@ -166,12 +168,56 @@ def test_a_range_beyond_the_document_is_a_bad_range_and_one_overlapping_it_is_cl
 def test_the_tokens_are_distinct_bounded_and_in_reading_order(tmp_path: Path) -> None:
     doc = pymupdf.open()
     page = doc.new_page()
-    page.insert_text((40, 60), "A1 B2 A1 " + "X" * 40 + " C3 D4 E5 F6", fontsize=9)
+    page.insert_text((40, 60), "title A1 B2 A1 " + "X" * 40 + " C3 D4 E5 F6", fontsize=9)
     pdf = _save(doc, tmp_path / "t.pdf")
     tokens = child.handle(request("pages", pdf, first=1, last=1, token_sample=4))["result"][
         "pages"
     ][0]["tokens"]
-    assert tokens == ["A1", "B2", "C3", "D4"]  # the repeat and the 40-character word are skipped
+    # the repeat and the 40-character word are skipped; F3: the word without a digit (title)
+    # comes after every word that has one
+    assert tokens == ["A1", "B2", "C3", "D4"]
+    wide = child.handle(request("pages", pdf, first=1, last=1, token_sample=20))["result"]
+    assert wide["pages"][0]["tokens"] == ["A1", "B2", "C3", "D4", "E5", "F6", "title"]
+
+
+def _word(text: str) -> tuple[float, float, float, float, str]:
+    return (0.0, 0.0, 1.0, 1.0, text)
+
+
+def test_f3_ac_23_digit_tokens_fill_the_sample_first() -> None:
+    plain = [f"word{chr(97 + i // 26)}{chr(97 + i % 26)}" for i in range(150)]
+    numbered = [f"K{i}" for i in range(1, 151)]
+    words = [_word(t) for t in [*plain, *numbered]]
+    tokens = ele_inspect._tokens(words, 200)
+    assert len(tokens) == 200 and len(set(tokens)) == 200
+    assert tokens[:150] == numbered  # every token with a digit, in reading order
+    assert tokens[150:] == plain[:50]  # then the first of the others
+    assert all(len(t) <= contract.MAX_TOKEN_CHARS for t in tokens)
+    # more digit tokens than the sample: the sample is the first of them, no other at all
+    many = [_word(f"K{i}") for i in range(1, 301)] + [_word("title")]
+    assert ele_inspect._tokens(many, 200) == [f"K{i}" for i in range(1, 201)]
+    assert ele_inspect._tokens([], 200) == []
+    assert ele_inspect._tokens([_word("A1"), _word("A1"), _word("(A1)")], 5) == ["A1"]
+
+
+def test_f3_ac_24_a_long_word_is_split_before_the_bound() -> None:
+    tags = ["20XYZ10AB101", "20XYZ10AB102", "20XYZ10AB103", "20XYZ10AB104"]
+    ideographic = chr(0x3001)
+    word = ideographic.join(tags)
+    assert len(word) > contract.MAX_TOKEN_CHARS
+    assert ele_inspect._tokens([_word(word)], 200) == tags
+    mixed = ",".join(tags) + chr(0x3002) + "x" * 40  # the long piece is dropped, the tags stay
+    assert ele_inspect._tokens([_word(mixed)], 200) == tags
+    # a long word without a separator is dropped, as before
+    assert ele_inspect._tokens([_word("X" * 40 + "1")], 200) == []
+    # a word that fits is NOT split: a list of two short items stays one token
+    short = "X7:41" + ideographic + "42"
+    assert ele_inspect._tokens([_word(short)], 200) == [short]
+    assert {",", ideographic, chr(0x3002), chr(0xFF1B), ";"} <= contract.LONG_TOKEN_SPLIT
+
+
+def test_f3_the_service_and_the_pipeline_versions_moved_with_the_new_sample() -> None:
+    assert SERVICE_VERSION == "1.1.0" and PIPELINE_VERSION == "1.2.0"
 
 
 def test_two_inspections_of_one_file_are_the_same_bytes(tmp_path: Path) -> None:
