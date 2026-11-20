@@ -137,21 +137,22 @@ def _characters(page: Any) -> tuple[int, int, int, int, int]:
     return chars, unmapped, pua, cjk, latin
 
 
-def _pieces(word: str) -> list[str]:
+def _pieces(word: str) -> Iterator[str]:
     """The tokens one word yields: itself when it fits ``MAX_TOKEN_CHARS``; else its pieces that
-    fit, cut at ``LONG_TOKEN_SPLIT`` (a long word without one is prose or noise: none)."""
+    fit, cut at ``LONG_TOKEN_SPLIT`` (a long word without one is prose or noise: none). A
+    generator, so the caller can stop reading a long word as soon as its sample is full."""
     token = word.strip(_TOKEN_TRIM)
     if len(token) <= contract.MAX_TOKEN_CHARS:
-        return [token] if token else []
-    pieces: list[str] = []
+        if token:
+            yield token
+        return
     start = 0
     for index, char in enumerate(token + ","):
         if char in contract.LONG_TOKEN_SPLIT or index == len(token):
             piece = token[start:index].strip(_TOKEN_TRIM)
             if piece and len(piece) <= contract.MAX_TOKEN_CHARS:
-                pieces.append(piece)
+                yield piece
             start = index + 1
-    return pieces
 
 
 def _tokens(words: list[Any], sample: int) -> list[str]:
@@ -169,6 +170,8 @@ def _tokens(words: list[Any], sample: int) -> list[str]:
                 continue
             if any(char.isdigit() for char in token):
                 digits[token] = None
+                if len(digits) >= sample:
+                    break  # S-3: never past the sample, not even inside one long word
             elif len(others) < sample:
                 others[token] = None
         if len(digits) >= sample:

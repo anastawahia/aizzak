@@ -216,6 +216,15 @@ def test_f3_ac_24_a_long_word_is_split_before_the_bound() -> None:
     assert {",", ideographic, chr(0x3002), chr(0xFF1B), ";"} <= contract.LONG_TOKEN_SPLIT
 
 
+def test_rework_s3_a_long_word_never_takes_the_sample_past_its_cap() -> None:
+    word = chr(0x3001).join(f"20XYZ10AB{i:03d}" for i in range(40))
+    assert len(word) > contract.MAX_TOKEN_CHARS
+    tokens = ele_inspect._tokens([_word(word)], 5)
+    assert len(tokens) == 5 and tokens == [f"20XYZ10AB{i:03d}" for i in range(5)]
+    pieces = ele_inspect._pieces(word)
+    assert next(pieces) == "20XYZ10AB000"  # a generator: nothing is built ahead
+
+
 def test_f3_the_service_and_the_pipeline_versions_moved_with_the_new_sample() -> None:
     assert SERVICE_VERSION == "1.1.0" and PIPELINE_VERSION == "1.2.0"
 
