@@ -142,4 +142,43 @@ $ deploy/prometheus/test-rules.sh
 
 **PASS** — كل بوابات `CLAUDE.md` الممكن تشغيلها خضراء (ruff وmypy وlint-imports و9735 اختباراً و M‑04 = 1.0000 على 286 حالة)، وكل AC آلي ✅ بتغطية اختبار مسمّى، والثلاثة اليدوية (F3‑AC‑28 للمراجع، وF3‑AC‑29 وF3‑AC‑30 للمنسّق) والبوابة 6 (Docker) خارج نطاقي بالتعليمات وبسبب مكتوب، وNFR‑F3‑1 مقبول بقرار المالك (tally مع قوائم 1.8× مسجَّل). خطأ واحد minor (QA‑F3‑1) ولا blocking ولا major.
 
+## 6. إعادة الاختبار 1 (HEAD = 75db4eb، بعد 86b0cfc و75db4eb)
+
+**الحكم: PASS.** أُغلقت كل ملاحظات المراجعتين، ولم أجد خطأً جديداً. صار QA‑F3‑1 اختباراً عادياً ناجحاً (`Q::test_qa_f3_1_a_rating_inside_a_list_is_no_identifier`، بلا `xfail`). أضفتُ 53 حالة إلى `tests/unit/test_electrical_f3_qa.py` (صار 311 حالة، منها 20 دالة `test_rework_*`)، كلها خضراء.
+
+| الملاحظة | ما تحققتُ منه | الاختبار |
+|---|---|---|
+| مراجعة الشيفرة #1 (blocking): قيم التقدير داخل القوائم والنطاقات | `QS7,37<unit>` و`QS7,QS8,37<unit>` و`X7:41,37<unit>` و`X7:41,0.7<unit>` لكل وحدة (`kV`، `kVA`، `MVA`، `Hz`، `kA`، `kW`، `mA`، `kvar`، `VA`) تحت CN وIEC وKKS وكل القواعد: عضو غير مقروء (`group.member_unreadable`) ولا ورث للرأس. بند أول تقدير (`37kV,QS7`، `37kV,47Hz,29kA`) لا مجموعة. نطاقات وقوائم لاحقة بطرف تقدير (`1kV-3kV`، `1kV-3`، `1-3kV`، `QS7-QS9kV`، `…/2kV`، `QS7\8kV`) لا مجموعة. تهجئات عريضة (`３７kV`، `37ｋV`، `，`). الوحدة التي تقابل رمز حروف تتبع حالتها المكتوبة في القائمة كما وحدها (`37KV` و`37kv` و`3KA` رمز حروف، و`37kV` و`3kA` تقدير). قائمة مختلطة لا تعلّم غير التقدير. الجهود `24VDC` و`+24V` تبقى جهداً | `Q::test_rework_a_rating_in_a_list_is_unreadable_for_every_unit`، `…_a_rating_as_the_first_item_is_no_group`، `…_a_range_or_suffix_list_with_a_rating_end_is_no_group`، `…_a_wide_spelling_of_a_rating_in_a_list_is_still_a_rating`، `…_a_unit_that_is_a_letter_code_follows_its_written_case_in_a_list_too`، `…_a_mixed_list_flags_only_the_rating_and_keeps_the_rest` |
+| #2 (major): المسار السريع يفوّت تقديراً ينتهي بحرف تحكم | `37kV` و`47Hz` و`17VA` مع `U+0085` و`U+001C..001F` و`U+0000` و`U+0007` و`U+200B` في الآخر والأول والوسط: لا معرّف. والتقدير المنتهي بالتحكم داخل قائمة غير مقروء. و`QS7` + تحكم تبقى غير صالحة بـ`text.hidden_character` | `Q::test_rework_a_rating_ending_in_a_control_character_is_still_no_identifier`، `…_a_control_character_does_not_hide_a_rating_in_a_list` |
+| #4..#6 (minor): حذف `KksRules.shortest`، و`hint=IDENTIFIER_GROUP`، و`MAX_GROUP_KEYS` | `shortest` غير موجود وبوابة الشبيه من `near_miss_min_length` (عُدّل اختبار الانحراف 9). `hint=IDENTIFIER_GROUP` يعيد `None` لكل شكل ويبقى قراءة النص وحده صالحة. `MAX_GROUP_KEYS` = 65: مجموعة `QS1-QS64` تحمل 65 مفتاحاً وآخرها `QS64` (أُغلقت الملاحظة M‑2 من الجولة الأولى) | `Q::test_deviation_9_the_near_miss_gate_reads_its_own_key_not_shortest`، `Q::test_rework_a_group_is_never_read_on_a_hint`، `Q::test_rework_the_group_keys_hold_the_form_and_sixty_four_members` |
+| S‑1: فقدان أعلام النص على الأعضاء | لكل شكل (قائمة، نطاق، قائمة لاحقة بـ`/` و`\`) ومع الحرف الصفري العرض في البداية والآخر ومع bidi: كل عضو يحمل `text.hidden_character` وغير صالح، أو `text.bidi_control` وصالح. والمجموعة المحلّلة بلا علم تبقى صالحة. وعدّ المجموعة المعلَّمة = عدّ أعضائها وحدهم (لا دليل KKS) | `Q::test_rework_the_text_flags_reach_every_member_of_every_group_form`، `Q::test_rework_a_flagged_group_counts_as_its_members_do_alone` |
+| S‑2: ميزانية `TALLY_MEMBER_BUDGET` | الحدّ 2000. عند 2000 بالضبط تُعدّ كلها (40 نطاقاً من 50). عند 1999 تُعدّ. عند 2001 تُترك المجموعة التي تتجاوز كلها لا تُقطع (1950)، وتُقرأ بعدها مجموعة صغيرة تتسع (1952). الصفحة العادية تُعدّ بدقة (300 رمز × 3 = 900، و666 × 3 = 1998). 1000 قائمة من عضوين = 2000 والفائض لا يُقرأ. الميزانية لكل استدعاء وتشمل المسبار (KKS: 1998). نطاق فوق السقف 64 لا يستهلك شيئاً. و`parse` وحده بلا ميزانية | `Q::test_rework_the_budget_is_two_thousand`، `…_the_budget_boundary_at_2000_and_2001_members`، `…_a_normal_page_counts_exactly`، `…_the_budget_is_per_call_and_counts_the_probe_too`، `…_over_the_cap_groups_cost_no_budget`، `…_parse_has_no_budget` |
+| S‑3: مولّد `_pieces` في ele-parse | كلمة طويلة من 59 قطعة بعيّنة 5 تعيد 5 بالضبط، سواء سبقتها كلمة أخرى أم لا، وبعيّنة 1 تعيد واحدة، وبعيّنة لم تُملأ تعيد كل القطع. كلمة من 200,000 قطعة تنتهي في أقل من ثانيتين | `Q::test_rework_a_long_word_never_overfills_the_sample`، و`test_ele_parse_service.py` (اختبارات المطوّر) |
+| S‑4: `is_space` واحدة | `U+0085` و`U+001C..001F` ليست فراغاً في الطيّ ولا في `split_candidates` (تبقى داخل الكلمة وتُعلَّم)، والفراغ الحقيقي (`\t \n \r \v \f` والمسافة و`U+3000` و`U+00A0` و`U+2028/9`) يفصل | `Q::test_rework_u0085_and_the_file_separators_are_not_whitespace` |
+
+**بوابات إعادة الاختبار** (من `/home/AIZZAK`، على الشجرة الحالية):
+
+```
+$ .venv/bin/ruff format --check .
+1018 files already formatted
+$ .venv/bin/ruff check .
+All checks passed!
+$ .venv/bin/mypy src
+Success: no issues found in 555 source files
+$ .venv/bin/lint-imports
+Contracts: 9 kept, 0 broken.
+$ .venv/bin/pytest -rs tests/unit tests/architecture tests/eval
+9802 passed, 37 skipped, 7 warnings in 293.35s (0:04:53)
+   (الـ37 تخطٍّ: 19 بسبب RUN_EDGE_FILES_TEST=1 و18 بسبب RUN_ELE_PARSE_CONTAINER_TEST=1؛ لا xfail بعد الآن)
+$ .venv/bin/python -m tests.eval.electrical.m04_identifiers --out <scratch>
+M-04 = 1.0000 over 286 cases
+$ deploy/prometheus/test-rules.sh
+... SUCCESS: 31 rules found
+test-rules: OK
+```
+
+(بعد آخر تشغيل كامل غيّرتُ سطراً واحداً في اختباري يشدّد تأكيداً، وأعدتُ تشغيل ملفي وruff وM‑04: كلها خضراء.)
+
+**ملاحظات تبقى للمنسّق (ليست أخطاء):** M‑1 (`1X-37',38'` مجموعة غير صالحة) وM‑3 (`X7:41,abc` تقرأ `abc` نقطة) كما هما، قرارا تصميم. وعند استنفاد الميزانية تُترك المجموعة غير مقروءة ويُعدّ ما قبلها فقط، وهذا مقصود بنص S‑2.
+
 </div>

@@ -27,8 +27,13 @@ from app.modules.electrical.shared.kinds import (
     IdentifierKind,
     ParsedIdentifier,
 )
-from app.modules.electrical.shared.normalization import dedupe, folded
-from app.modules.electrical.shared.parser import MAX_GROUP_KEYS, MAX_TEXT_CHARS, IdentifierParser
+from app.modules.electrical.shared.normalization import dedupe, folded, is_space
+from app.modules.electrical.shared.parser import (
+    MAX_GROUP_KEYS,
+    MAX_TEXT_CHARS,
+    TALLY_MEMBER_BUDGET,
+    IdentifierParser,
+)
 from app.modules.electrical.shared.ratings import Rating, read_rating
 from app.modules.electrical.shared.rules import IdentifierRules
 from app.modules.electrical.shared.rules.errors import RuleError
@@ -1014,3 +1019,205 @@ def test_tokens_a_page_of_five_thousand_words_stays_in_reading_order() -> None:
 
 def test_tokens_the_service_version_moved_with_the_fill_order() -> None:
     assert SERVICE_VERSION == "1.1.0"
+
+
+# --- re-test 1: ratings inside groups, the text flags on members, the tally budget -----------
+
+_CTRL = ["\x85", "\x1c", "\x1d", "\x1e", "\x1f", "\x00", "\x07", "\u200b"]
+
+
+def _unreadable(found: ParsedIdentifier | None, count: int, bad: int) -> None:
+    assert found is not None and found.kind is _GROUP and found.group is not None
+    assert not found.valid and "group.member_unreadable" in found.issues
+    assert len(found.group.members) == count
+    assert found.group.members[bad].identifier is None
+
+
+@pytest.mark.parametrize("unit", ["kV", "kVA", "MVA", "Hz", "kA", "kW", "mA", "kvar", "VA"])
+def test_rework_a_rating_in_a_list_is_unreadable_for_every_unit(unit: str) -> None:
+    for parser in (CN, FULL):
+        _unreadable(parser.parse(f"QS7,37{unit}"), 2, 1)
+        _unreadable(parser.parse(f"QS7,QS8,37{unit}"), 3, 2)
+    for parser in (IEC, KKS, FULL):  # a terminal list: the rating does not inherit the head
+        _unreadable(parser.parse(f"X7:41,37{unit}"), 2, 1)
+        _unreadable(parser.parse(f"X7:41,0.7{unit}"), 2, 1)
+
+
+@pytest.mark.parametrize("text", ["37kV,QS7", "37kV,47Hz", "37kV,47Hz,29kA", "7-29kV,QS7"])
+def test_rework_a_rating_as_the_first_item_is_no_group(text: str) -> None:
+    for parser in (CN, IEC, KKS, FULL):
+        assert parser.parse(text) is None
+
+
+@pytest.mark.parametrize(
+    "text", ["1kV-3kV", "1kV-3", "1-3kV", "QS7-QS9kV", "20XYZ10AB131/2kV", "QS7\\8kV"]
+)
+def test_rework_a_range_or_suffix_list_with_a_rating_end_is_no_group(text: str) -> None:
+    for parser in (CN, IEC, KKS, FULL):
+        found = parser.parse(text)
+        assert found is None or found.kind is not _GROUP
+
+
+@pytest.mark.parametrize("text", ["QS7,37kV\x85", "QS7,37kV\x1f", "QS7,37\x1ckV", "QS7,37kV\u200b"])
+def test_rework_a_control_character_does_not_hide_a_rating_in_a_list(text: str) -> None:
+    _unreadable(CN.parse(text), 2, 1)
+
+
+@pytest.mark.parametrize(
+    "text", ["\uff31\uff33\uff17,37kV", "QS7,\uff13\uff17kV", "QS7,37\uff4bV", "QS7\uff0c37kV"]
+)
+def test_rework_a_wide_spelling_of_a_rating_in_a_list_is_still_a_rating(text: str) -> None:
+    _unreadable(CN.parse(text), 2, 1)
+
+
+def test_rework_a_unit_that_is_a_letter_code_follows_its_written_case_in_a_list_too() -> None:
+    """As alone: 37kV is a rating, 37KV and 37kv are the relay code (F3-AC-7)."""
+    for written in ("37KV", "37kv", "3KA"):
+        found = _read(CN, f"QS7,{written}")
+        assert found.valid and found.group is not None
+        assert found.group.members[1].identifier is not None
+        assert found.group.members[1].identifier.kind is IdentifierKind.LETTER_CODE
+        alone = _read(CN, written)
+        assert alone.kind is IdentifierKind.LETTER_CODE
+    _unreadable(CN.parse("QS7,3kA"), 2, 1)
+    _unreadable(CN.parse("QS7,37kV"), 2, 1)
+
+
+def test_rework_a_mixed_list_flags_only_the_rating_and_keeps_the_rest() -> None:
+    found = _read(CN, "QS7,37kV,QS8")
+    assert found.group is not None and found.issues == ("group.member_unreadable",)
+    assert [m.identifier is None for m in found.group.members] == [False, True, False]
+    assert _read(IEC, "X7:41,24VDC").valid and _read(IEC, "X7:41,+24V").valid  # a voltage is not
+    assert _read(IEC, "X7:41,42").valid
+
+
+@pytest.mark.parametrize("ctrl", _CTRL)
+def test_rework_a_rating_ending_in_a_control_character_is_still_no_identifier(ctrl: str) -> None:
+    for text in (f"37kV{ctrl}", f"{ctrl}37kV", f"37{ctrl}kV", f"47Hz{ctrl}", f"17VA{ctrl}"):
+        assert FULL.parse(text) is None, repr(text)
+    found = FULL.parse(f"QS7{ctrl}")
+    assert found is not None and not found.valid  # the control itself is flagged
+
+
+def test_rework_u0085_and_the_file_separators_are_not_whitespace() -> None:
+    """One predicate for the fold, the split and the rating check (S-4)."""
+    for ctrl in ("\x85", "\x1c", "\x1d", "\x1e", "\x1f"):
+        assert not is_space(ctrl)
+        assert split_candidates(f"QS7{ctrl}QS8") == (f"QS7{ctrl}QS8",)
+    for space in ("\t", "\n", "\r", "\v", "\f", " ", "\u3000", "\u00a0", "\u2028", "\u2029"):
+        assert is_space(space)
+        assert split_candidates(f"QS7{space}QS8") == ("QS7", "QS8")
+
+
+@pytest.mark.parametrize(
+    ("parser", "text"),
+    [
+        (IEC, "X7:41,42,43"),
+        (IEC, "X7:41,42\x1f"),
+        (CN, "QS7-QS9"),
+        (CN, "QS7\\8"),
+        (KKS, "20XYZ10AB131/2/3"),
+    ],
+)
+def test_rework_the_text_flags_reach_every_member_of_every_group_form(
+    parser: IdentifierParser, text: str
+) -> None:
+    clean = _group(parser, text.replace("\x1f", ""))
+    assert clean.group is not None and clean.valid
+    for flagged in (text + "\u200b", "\u200b" + text):
+        found = _group(parser, flagged)
+        assert found.group is not None and not found.valid
+        assert "text.hidden_character" in found.issues
+        for member in found.group.members:
+            assert member.identifier is not None
+            assert "text.hidden_character" in member.identifier.issues
+            assert not member.identifier.valid
+    bidi = _group(parser, text + "\u202e")
+    assert bidi.group is not None and "text.bidi_control" in bidi.issues
+    for member in bidi.group.members:
+        assert member.identifier is not None
+        assert "text.bidi_control" in member.identifier.issues
+
+
+def test_rework_a_flagged_group_counts_as_its_members_do_alone() -> None:
+    """Additive evidence (KKS) needs a clean reading; a device convention counts a flagged one
+    alone as it always did, and a group's members now count the same."""
+    assert IEC.tally(["20XYZ10AB131/2/3\u200b"] * 3).conventions == {}
+    assert KKS.tally(["20XYZ10AB131/2/3\u200b"] * 3).conventions.get(Convention.KKS, 0) == 0
+    assert IEC.tally(["20XYZ10AB131/2/3"] * 3).conventions == {Convention.KKS: 9}
+    alone = IEC.tally(["X7:41\u200b"] * 3).conventions
+    assert IEC.tally(["X7:41,42\u200b"] * 3).conventions == {
+        Convention.IEC_81346: 2 * alone.get(Convention.IEC_81346, 0)
+    }
+
+
+def test_rework_a_group_is_never_read_on_a_hint() -> None:
+    for parser, text in ((IEC, "X7:41,42,43"), (CN, "QS7-QS9"), (KKS, "20XYZ10AB131/2/3")):
+        assert parser.parse(text, hint=_GROUP) is None
+        assert _group(parser, text).valid  # still read from the text alone
+
+
+# the budget: 2,000 members one tally call may expand (S-2)
+
+
+def test_rework_the_budget_is_two_thousand() -> None:
+    assert TALLY_MEMBER_BUDGET == 2_000
+
+
+def _count(parser: IdentifierParser, tokens: list[str]) -> tuple[int, int]:
+    tally = parser.tally(tokens)
+    return sum(tally.conventions.values()), tally.identifiers
+
+
+def test_rework_the_budget_boundary_at_2000_and_2001_members() -> None:
+    full = ["QS1-QS50"] * 40  # exactly 2,000
+    assert _count(CN, full) == (2000, 2000)
+    assert _count(CN, [*full, "QS1-QS2"]) == (2000, 2000)  # the next group is not read
+    assert _count(CN, ["QS1-QS50"] * 39 + ["QS1-QS49"]) == (1999, 1999)  # 1,999
+    # 2,001: the group that would pass the budget is skipped whole, never cut
+    assert _count(CN, ["QS1-QS50"] * 39 + ["QS1-QS51"]) == (1950, 1950)
+    # a small group after a skipped one still fits what is left
+    assert _count(CN, ["QS1-QS50"] * 39 + ["QS1-QS51", "QS1-QS2"]) == (1952, 1952)
+
+
+def test_rework_a_normal_page_counts_exactly() -> None:
+    assert _count(IEC, ["X7:41,42,43"] * 300) == (900, 900)
+    assert _count(IEC, ["X7:41,42,43"] * 666) == (1998, 1998)
+    assert _count(CN, ["QS7,QS8"] * 1000) == (2000, 2000)
+    assert _count(CN, ["QS7,QS8"] * 1001) == (2000, 2000)
+
+
+def test_rework_the_budget_is_per_call_and_counts_the_probe_too() -> None:
+    assert _count(CN, ["QS1-QS50"] * 40) == _count(CN, ["QS1-QS50"] * 40) == (2000, 2000)
+    assert IEC.tally(["20XYZ10AB131/2/3"] * 666).conventions == {Convention.KKS: 1998}
+    assert IEC.tally(["20XYZ10AB131/2/3"] * 700).conventions == {Convention.KKS: 1998}
+
+
+def test_rework_over_the_cap_groups_cost_no_budget() -> None:
+    assert _count(CN, ["QS1-QS9999"] * 5000) == (0, 0)
+    assert _count(CN, ["QS1-QS9999"] * 100 + ["QS1-QS50"] * 40) == (2000, 2000)
+
+
+def test_rework_parse_has_no_budget() -> None:
+    assert len(_texts(_group(CN, "QS0-QS63"))) == 64 and _group(CN, "QS0-QS63").valid
+
+
+def test_rework_the_group_keys_hold_the_form_and_sixty_four_members() -> None:
+    found = _group(CN, "QS1-QS64")
+    assert MAX_GROUP_KEYS == 65 and len(found.forms.search_keys) == 65
+    assert found.forms.search_keys[-1] == "QS64"  # M-2 of the first QA round, closed
+
+
+# ele-parse (S-3)
+
+
+def test_rework_a_long_word_never_overfills_the_sample() -> None:
+    word = ",".join(f"K{i}" for i in range(1, 60))
+    assert ele_inspect._tokens(_words(word), 5) == ["K1", "K2", "K3", "K4", "K5"]
+    assert ele_inspect._tokens(_words("title", word), 5) == ["K1", "K2", "K3", "K4", "K5"]
+    assert ele_inspect._tokens(_words(word), 1) == ["K1"]
+    assert len(ele_inspect._tokens(_words(word), 200)) == 59  # a sample not reached: all
+    huge = ",".join(f"K{i}" for i in range(200_000))
+    started = time.perf_counter()
+    assert len(ele_inspect._tokens(_words(huge), 200)) == 200
+    assert time.perf_counter() - started < 2.0
