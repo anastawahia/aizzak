@@ -29,7 +29,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from app.modules.electrical.shared.ansi import (
     is_ansi_evidence,
@@ -202,7 +202,10 @@ class IdentifierParser:
         if hint is None:
             if self._rated(forms.canonical, text):
                 return None  # F3 (FR-ID-20): a value with a unit is a rating, never an identifier
-            if grouped and (group := self._group(forms, budget)) is not None:
+            group = self._group(forms, budget) if grouped else None
+            if group is _OVER_BUDGET:
+                return None  # S-6: a group the budget refused is an unread token, never a terminal
+            if isinstance(group, ParsedIdentifier):
                 issues = text_issues(text)
                 return _flag_members(_flag_text(group, issues), issues)
         candidates: Iterable[_Parse] = (
@@ -233,11 +236,12 @@ class IdentifierParser:
 
     def _group(
         self, forms: NormalizedForms, budget: list[int] | None = None
-    ) -> ParsedIdentifier | None:
-        """F3 (FR-ID-19): the text as a range, a list or a suffix list, or None. A range is
-        tried first (before the terminals: ``X23-X37``), then a list, then a suffix list.
-        ``budget`` (a tally's) is the members left to expand: a group that would exceed it is not
-        read (S-2)."""
+    ) -> ParsedIdentifier | None | _OverBudget:
+        """F3 (FR-ID-19): the text as a range, a list or a suffix list, or None (no group). A
+        range is tried first (before the terminals: ``X23-X37``), then a list, then a suffix
+        list. ``budget`` (a tally's) is the members left to expand: a group that would exceed it
+        is ``_OVER_BUDGET``, which the caller reads as an unread token and NEVER as "no group"
+        (the text would fall through to the terminals, S-6)."""
         canonical = forms.canonical
         cased = self._cased(forms)
         limit = self._rules.groups.max_members
@@ -248,14 +252,12 @@ class IdentifierParser:
         ):
             members, too_many = ranged
             if not _spend(budget, len(members)):
-                return None
+                return _OVER_BUDGET
             return self._group_result(
                 forms, GroupForm.RANGE, RANGE_SEPARATOR, [self._plain(t) for t in members], too_many
             )
         if (items := list_items(canonical)) is not None:
-            if not _spend(budget, len(items)):
-                return None
-            return self._list_group(forms, items, cased, limit)
+            return self._list_group(forms, items, cased, limit, budget)
         return self._suffix_group(forms, cased, limit, budget)
 
     def _rating_end(self, cased: str) -> bool:
@@ -268,8 +270,13 @@ class IdentifierParser:
         return text, self._member(text)
 
     def _list_group(
-        self, forms: NormalizedForms, items: tuple[str, ...], cased: str, limit: int
-    ) -> ParsedIdentifier | None:
+        self,
+        forms: NormalizedForms,
+        items: tuple[str, ...],
+        cased: str,
+        limit: int,
+        budget: list[int] | None,
+    ) -> ParsedIdentifier | None | _OverBudget:
         if not items[0]:
             return None
         written = tuple(cased.split(LIST_SEPARATOR))
@@ -280,6 +287,8 @@ class IdentifierParser:
             return None
         if len(items) > limit:
             return self._group_result(forms, GroupForm.LIST, LIST_SEPARATOR, [], True)
+        if not _spend(budget, len(items)):  # only a list that reads and is within the cap pays
+            return _OVER_BUDGET
         members: list[tuple[str, ParsedIdentifier | None]] = [(items[0], first)]
         for item, as_written in zip(items[1:], written[1:], strict=True):
             alone = self._member(item, as_written) if item else None
@@ -300,7 +309,7 @@ class IdentifierParser:
 
     def _suffix_group(
         self, forms: NormalizedForms, cased: str, limit: int, budget: list[int] | None
-    ) -> ParsedIdentifier | None:
+    ) -> ParsedIdentifier | None | _OverBudget:
         canonical = forms.canonical
         for separator, kinds in self._rules.groups.suffix_lists.items():
             if separator not in canonical:
@@ -318,7 +327,7 @@ class IdentifierParser:
             if texts is None:
                 continue
             if not _spend(budget, len(texts)):
-                return None
+                return _OVER_BUDGET
             members = [(head, first), *(self._plain(t) for t in texts[1:])]
             return self._group_result(forms, GroupForm.SUFFIX_LIST, separator, members, False)
         return None
@@ -448,6 +457,13 @@ class IdentifierParser:
             families[found.plc.family] += 1
         if found.kind is IdentifierKind.CROSS_REFERENCE and found.variant is not None:
             formats[found.variant] += 1
+
+
+class _OverBudget:
+    """The answer of ``_group`` for a group a tally's budget refused (not "no group")."""
+
+
+_OVER_BUDGET: Final = _OverBudget()
 
 
 def _spend(budget: list[int] | None, members: int) -> bool:

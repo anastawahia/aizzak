@@ -1196,6 +1196,8 @@ def test_rework_the_budget_is_per_call_and_counts_the_probe_too() -> None:
 def test_rework_over_the_cap_groups_cost_no_budget() -> None:
     assert _count(CN, ["QS1-QS9999"] * 5000) == (0, 0)
     assert _count(CN, ["QS1-QS9999"] * 100 + ["QS1-QS50"] * 40) == (2000, 2000)
+    over_list = "QS1" + ",QS1" * 70  # 71 items: over the cap, so it costs nothing (rework 2)
+    assert _count(CN, [over_list] * 100 + ["QS1-QS50"] * 40) == (2000, 2000)
 
 
 def test_rework_parse_has_no_budget() -> None:

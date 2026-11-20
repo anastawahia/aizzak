@@ -20,7 +20,7 @@ from app.modules.electrical.shared.kinds import (
     IdentifierKind,
     ParsedIdentifier,
 )
-from app.modules.electrical.shared.normalization import folded
+from app.modules.electrical.shared.normalization import folded, normalize
 from app.modules.electrical.shared.parser import TALLY_MEMBER_BUDGET, IdentifierParser
 from app.modules.electrical.shared.ratings import read_rating
 from tests.unit.support_electrical_shared import parser_for
@@ -347,3 +347,41 @@ def test_rework_5_the_64th_member_keeps_its_key() -> None:
     found = _group(_CN, "QS1-QS64")
     assert len(found.group.members) == 64  # type: ignore[union-attr]
     assert "QS64" in found.forms.search_keys and len(found.forms.search_keys) == 65
+
+
+# --- rework 2: a refused group is an unread token, and a list pays only when it reads -----
+
+
+def test_rework_2_s6_a_range_the_budget_refused_never_reads_as_a_terminal() -> None:
+    drain = ["X1-X50"] * 41  # 41 x 50 members: past the budget of 2,000
+    before = _IEC.tally(drain)
+    after = _IEC.tally([*drain, "X23-X37"] * 1)
+    assert after.conventions == before.conventions  # X23-X37 is not a terminal X37 on X23
+    assert after.identifiers == before.identifiers and after.tokens == before.tokens + 1
+    cn = parser_for(Convention.CN_LETTER_CODES)
+    drain_cn = ["QS1-QS50"] * 41
+    base = cn.tally(drain_cn)
+    assert cn.tally([*drain_cn, "1X-64X"]).conventions == base.conventions
+    # with the budget intact the same text is flagged as a group, not read as a terminal
+    assert _IEC.tally(["X23-X37"]).conventions == {}
+
+
+def test_rework_2_s6_the_refusal_is_not_a_group_and_not_a_fall_through() -> None:
+    forms = normalize("X23-X37")
+    assert _IEC._first(forms, None, "X23-X37", budget=[0]) is None
+    parsed = _IEC.parse("X23-X37")  # parse itself has no budget: the flagged group
+    assert parsed is not None and parsed.kind is _GROUP
+
+
+def test_rework_2_t1_over_the_cap_lists_cost_no_budget() -> None:
+    over = "X7:1" + ",1" * 70  # 71 items: over the cap of 64
+    assert _IEC.tally([over] * 40).identifiers == 0
+    normal = ["X7:41,42,43"] * 10
+    assert _IEC.tally([over] * 40 + normal).conventions == {Convention.IEC_81346: 30}
+
+
+def test_rework_2_t1_unreadable_lists_do_not_drain_the_budget() -> None:
+    unreadable = "ZZZ," + ",".join(["1"] * 63)  # the first item reads as nothing
+    normal = ["X7:41,42,43"] * 10
+    tally = _IEC.tally([unreadable] * 100 + normal)
+    assert tally.conventions == {Convention.IEC_81346: 30}
