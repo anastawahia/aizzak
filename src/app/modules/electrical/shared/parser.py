@@ -308,6 +308,8 @@ class IdentifierParser:
         (FR-ID-08), whatever its shape; any other value with a unit of ``[ratings]`` is a rating."""
         if forms.canonical in self._rules.voltage_labels:
             return False
+        if text.isascii() and not text.rstrip()[-1:].isalpha():
+            return False  # a rating ends in its unit: skip the fold for the common text
         return read_rating(folded(text), self._rules) is not None
 
     def _parse_non_ascii(

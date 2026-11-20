@@ -93,6 +93,8 @@ def _is_hidden(ch: str) -> bool:
 
 
 def _fold(text: str) -> str:
+    if text.isascii():
+        return text  # NFKC, the dash and punctuation tables and the digit fold change nothing
     # the punctuation first as well: NFKC turns a double prime into two primes
     folded = unicodedata.normalize("NFKC", text.translate(_PUNCTUATION))
     folded = folded.translate(_DASHES).translate(_PUNCTUATION)
@@ -107,6 +109,8 @@ def _fold(text: str) -> str:
 def folded(text: str) -> str:
     """The text folded as ``canonical_form`` folds it (NFKC, digits, dashes, no whitespace, no
     hidden characters) but NOT upper-cased: a rating's unit is read in its written case (F3)."""
+    if text.isascii() and text.isprintable():
+        return text.replace(" ", "")  # no control, no hidden character: only spaces go
     return "".join(ch for ch in _fold(text) if not _is_space(ch) and not _is_hidden(ch))
 
 
@@ -117,6 +121,8 @@ def canonical_form(text: str) -> str:
 def has_enclosed_number(text: str) -> bool:
     """F3 (gap 14): a circled, parenthesised or dotted number (a page marker, a footnote): NFKC
     would turn it into a plain number and read it as a wire."""
+    if text.isascii():
+        return False  # the blocks are all above U+2460: the common text needs no scan
     return any(any(ord(ch) in block for block in _ENCLOSED) for ch in text)
 
 
@@ -124,6 +130,8 @@ def text_issues(text: str) -> tuple[str, ...]:
     """Reasons the TEXT (not the identifier) is suspect: hidden characters were dropped
     (invalidating, FR-ID-10: flagged, never silently dropped) or bidi controls were
     present (reported, not invalidating)."""
+    if text.isascii() and text.isprintable():
+        return ()  # no control, no hidden, no bidi character
     issues: list[str] = []
     if any(_is_hidden(ch) and ord(ch) not in _BIDI for ch in _fold(text)):
         issues.append(ISSUE_HIDDEN)
