@@ -61,6 +61,18 @@ def test_every_appendix_a_example_parses_to_its_kind(kind: IdentifierKind, text:
     assert found.forms.canonical and found.forms.search_keys
 
 
+# The F3 examples (SRS 0.21 Appendix A, D-37), invented; each has an `appendix-a` case.
+_APPENDIX_A_F3 = [
+    "X7:41,42,43", "QS7-QS9", "QS7\\8", "20XYZ10AB131/2/3", "27.6E", ".6E",
+    "20XYZ10AB123-CD45", "20XYZ", "1X-37'", "59G2",
+]  # fmt: skip
+
+
+def test_f3_ac_27_every_f3_appendix_example_has_an_appendix_a_case() -> None:
+    sourced = {c["text"] for c in _CASES if c.get("source") == "appendix-a"}
+    assert set(_APPENDIX_A_F3) <= sourced
+
+
 @pytest.mark.parametrize(
     ("kind", "text"), [(k, t) for k, texts in _APPENDIX_A_F2.items() for t in texts]
 )
@@ -80,6 +92,7 @@ def test_appendix_a_connection_points_carry_label_and_role(text: str) -> None:
 def test_every_appendix_a_example_is_in_the_case_set() -> None:
     texts = {c["text"] for c in _CASES}
     needed = {t for group in (*_APPENDIX_A.values(), *_APPENDIX_A_F2.values()) for t in group}
+    needed |= set(_APPENDIX_A_F3)
     needed |= set(_CONNECTION_POINT_EXAMPLES)
     assert needed <= texts
 

@@ -3,6 +3,7 @@ location references and determinism. Every example here is invented (F3-AC-28)."
 
 from __future__ import annotations
 
+import copy
 from dataclasses import replace
 
 import pytest
@@ -11,6 +12,7 @@ from app.modules.electrical.shared.kinds import Convention, IdentifierKind, Pars
 from app.modules.electrical.shared.normalization import folded
 from app.modules.electrical.shared.parser import IdentifierParser
 from app.modules.electrical.shared.ratings import Rating, read_rating
+from app.modules.electrical.shared.rules import IdentifierRules
 from tests.eval.electrical.m04_identifiers import (
     expected_shape,
     load_cases,
@@ -18,7 +20,8 @@ from tests.eval.electrical.m04_identifiers import (
     observed,
     parse_case,
 )
-from tests.unit.support_electrical_shared import parser_for
+from tests.unit.support_electrical_shared import _selection, parser_for
+from tests.unit.test_electrical_shared_rules import _raw
 
 _DEVICE = IdentifierKind.ANSI_DEVICE
 _ANSI = parser_for(Convention.IEC_81346, Convention.ANSI)
@@ -243,3 +246,32 @@ def test_f3_ac_22_location_references(text: str, variant: str) -> None:
     assert IdentifierParser(load_rules()).parse("0.6E") is None
     # the older formats win where they read the text
     assert IdentifierParser(load_rules()).parse("27.6").variant == "page_dot_column"  # type: ignore[union-attr]
+
+
+def test_nfr_f3_2_every_f3_case_parses_twice_the_same() -> None:
+    cases = [c for c in load_cases() if int(str(c["id"])[1:]) >= 237]
+    assert len(cases) >= 45
+    for case in cases:
+        first = IdentifierParser(load_rules())
+        second = IdentifierParser(load_rules())
+        assert observed(parse_case(first, case)) == observed(parse_case(second, case)), case["id"]
+        assert observed(parse_case(first, case)) == expected_shape(case), case["id"]
+
+
+def test_nfr_f3_3_f3_rules_need_no_code() -> None:
+    """A new rating unit and a new opt-in wire pattern change the reading by data alone."""
+    data = copy.deepcopy(_raw())
+    data["ratings"]["units"].append("kwh")
+    data["wire_numbers_opt_in"]["two_letters"] = r"^\d{1,3}[A-Z]{2}$"
+    rules = IdentifierRules.from_mapping(data)
+    named = rules.narrowed(_selection(wire_number_patterns=("sequential", "two_letters")))
+    found = IdentifierParser(named).parse("38AB")
+    assert found is not None and found.variant == "two_letters"
+    assert IdentifierParser(rules).parse("38AB") is None  # never read unnarrowed
+    # with the unit, 52kwh is a rating; without it the text reads as ANSI 52 and an unknown suffix
+    ansi = frozenset({Convention.ANSI})
+    assert IdentifierParser(rules.narrowed(_selection(conventions=ansi))).parse("52kwh") is None
+    del data["ratings"]["units"][-1]
+    without = IdentifierRules.from_mapping(data).narrowed(_selection(conventions=ansi))
+    read = IdentifierParser(without).parse("52kwh")
+    assert read is not None and read.issues == ("ansi.unknown_suffix",)
