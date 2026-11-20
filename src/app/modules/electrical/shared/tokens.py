@@ -1,4 +1,6 @@
-"""F3 (gap 34): the identifier candidates a drawing's word holds. Stdlib only, a leaf module.
+"""F3 (gap 34): the identifier candidates a drawing's word holds.
+
+Imports only the shared fold, for the canonical form's own whitespace predicate.
 
 A word the text layer yields is not always one identifier: an ideographic full stop closes a
 sentence, a semicolon (ASCII or full-width) separates two tags, brackets wrap a tag
@@ -14,6 +16,8 @@ A prime or a double prime right after a digit stays (``1X-37'`` is a terminal wh
 from __future__ import annotations
 
 from typing import Final
+
+from app.modules.electrical.shared.normalization import is_space
 
 # U+3002 ideographic full stop, U+FF61 half-width ideographic full stop, U+FF1B full-width
 # semicolon, and the ASCII semicolon
@@ -33,7 +37,7 @@ def _pieces(word: str) -> list[str]:
     pieces: list[str] = []
     current: list[str] = []
     for ch in word:
-        if ch.isspace() or ch in SENTENCE_BREAKS:
+        if is_space(ch) or ch in SENTENCE_BREAKS:
             if current:
                 pieces.append("".join(current))
                 current = []

@@ -78,7 +78,7 @@ ISSUE_NON_ASCII = "text.non_ascii"  # INC1-Q-6: what stays non-ASCII (e.g. a com
 NON_INVALIDATING_ISSUES = frozenset({ISSUE_BIDI})  # flagged, but the identifier stays valid
 
 
-def _is_space(ch: str) -> bool:
+def is_space(ch: str) -> bool:
     """Whitespace: tab, LF, CR, VT, FF and the space separators (Zs, Zl, Zp). Other
     controls that ``str.isspace`` accepts (U+001C..U+001F, U+0085) are NOT whitespace."""
     return ch in "\t\n\r\v\f" or unicodedata.category(ch) in ("Zs", "Zl", "Zp")
@@ -87,7 +87,7 @@ def _is_space(ch: str) -> bool:
 def _is_hidden(ch: str) -> bool:
     """Invisible and not whitespace: control (Cc), format (Cf) or default-ignorable."""
     code = ord(ch)
-    if _is_space(ch):
+    if is_space(ch):
         return False
     return unicodedata.category(ch) in ("Cc", "Cf") or code in _IGNORABLE
 
@@ -111,7 +111,7 @@ def folded(text: str) -> str:
     hidden characters) but NOT upper-cased: a rating's unit is read in its written case (F3)."""
     if text.isascii() and text.isprintable():
         return text.replace(" ", "")  # no control, no hidden character: only spaces go
-    return "".join(ch for ch in _fold(text) if not _is_space(ch) and not _is_hidden(ch))
+    return "".join(ch for ch in _fold(text) if not is_space(ch) and not _is_hidden(ch))
 
 
 def canonical_form(text: str) -> str:

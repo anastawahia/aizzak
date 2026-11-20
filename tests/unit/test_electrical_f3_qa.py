@@ -109,9 +109,9 @@ def test_the_cap_is_checked_before_a_member_is_read(monkeypatch: pytest.MonkeyPa
     calls: list[str] = []
     real = IdentifierParser._member
 
-    def spy(self: IdentifierParser, text: str) -> ParsedIdentifier | None:
+    def spy(self: IdentifierParser, text: str, cased: str | None = None) -> ParsedIdentifier | None:
         calls.append(text)
-        return real(self, text)
+        return real(self, text, cased)
 
     monkeypatch.setattr(IdentifierParser, "_member", spy)
     assert range_members("QS1-QS9999", 64) == ((), True)
@@ -674,20 +674,11 @@ def test_a_rating_beside_an_identifier_leaves_the_identifier_alone() -> None:
     assert CN.tally(["QS7 37kV"]).conventions == {Convention.CN_LETTER_CODES: 1}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="QA-F3-1: the rating guard is lost inside a list (items come from the upper-cased form)",
-)
 def test_qa_f3_1_a_rating_inside_a_list_is_no_identifier() -> None:
     found = CN.parse("QS7,37kV")
-    assert (
-        found is None
-        or found.kind is not _GROUP
-        or all(
-            m.identifier is None or m.text.upper() != "37KV"
-            for m in found.group.members  # type: ignore[union-attr]
-        )
-    )
+    assert found is not None and found.kind is _GROUP and found.group is not None
+    assert not found.valid and "group.member_unreadable" in found.issues
+    assert [m.identifier is None for m in found.group.members] == [False, True]
 
 
 def test_deviation_7_the_units_table_is_data() -> None:
@@ -720,7 +711,7 @@ def test_deviation_8_the_kks_part_bound_stays_eight() -> None:
 
 def test_deviation_9_the_near_miss_gate_reads_its_own_key_not_shortest() -> None:
     kks = RULES.kks
-    assert kks.near_miss_min_length == 7 and kks.shortest >= 1  # kept, no longer used
+    assert kks.near_miss_min_length == 7
     assert _read(KKS, "20XYZ").kks is not None and _read(KKS, "20XYZ").valid
     assert KKS.parse("20XY") is None and KKS.parse("20XYZ1") is None  # short: no near miss
     near = _read(KKS, "20XYZ10AB123CD4567")

@@ -3,6 +3,7 @@ counts their members. Every example here is invented (F3-AC-28)."""
 
 from __future__ import annotations
 
+import itertools
 import time
 
 import pytest
@@ -19,7 +20,9 @@ from app.modules.electrical.shared.kinds import (
     IdentifierKind,
     ParsedIdentifier,
 )
-from app.modules.electrical.shared.parser import IdentifierParser
+from app.modules.electrical.shared.normalization import folded
+from app.modules.electrical.shared.parser import TALLY_MEMBER_BUDGET, IdentifierParser
+from app.modules.electrical.shared.ratings import read_rating
 from tests.unit.support_electrical_shared import parser_for
 from tests.unit.test_electrical_f2_profile import _record
 
@@ -232,3 +235,115 @@ def test_group_helpers() -> None:
     )
     assert suffix_members("QS7", ("12",)) is None and suffix_members("QS", ("1",)) is None
     assert suffix_members("QS7", ("a",)) is None and suffix_members("QS7", ("",)) is None
+
+
+# --- rework 1: ratings in groups, text flags, budget, fast path ----------------------------
+
+
+def _unread(parser: IdentifierParser, text: str) -> list[bool]:
+    found = parser.parse(text)
+    assert found is not None and found.group is not None, text
+    return [m.identifier is None for m in found.group.members]
+
+
+@pytest.mark.parametrize(
+    ("text", "flags"), [("QS7,37kV", [False, True]), ("37kV,38kV", [True, True])]
+)
+def test_rework_1_a_rating_in_a_list_reads_as_nothing(text: str, flags: list[bool]) -> None:
+    found = _CN.parse(text)
+    if flags == [True, True]:
+        assert found is None  # the first item decides: a rating anchors nothing
+    else:
+        assert _unread(_CN, text) == flags
+        assert not found.valid  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("text", ["1kV-3kV", "10kA-12kA"])
+def test_rework_1_a_range_of_ratings_is_no_group(text: str) -> None:
+    for parser in (_CN, _IEC, parser_for(Convention.NFPA_JIC)):
+        found = parser.parse(text)
+        assert found is None or found.kind is not _GROUP, (text, found)
+
+
+def test_rework_1_a_rating_takes_no_inherited_head() -> None:
+    found = _group(_IEC, "X7:41,37kV")
+    assert _members(found) == ["X7:41", "37KV"]
+    assert [m.identifier is None for m in found.group.members] == [False, True]  # type: ignore[union-attr]
+    assert not found.valid
+    other = _group(_IEC, "X7:41,42,37kV")
+    assert _members(other)[1] == "X7:42"
+    # the unit in another case is a relay's code, not a rating, and still reads
+    assert _CN.parse("37KV,QS7") is not None
+
+
+def test_rework_2_a_rating_followed_by_a_control_character_is_still_a_rating() -> None:
+    controls = [chr(c) for c in (*range(0, 9), *range(14, 28), 127)]
+    for control in controls:
+        assert _CN.parse("37kV" + control) is None, hex(ord(control))
+        assert _EVERYTHING_IEC.parse("47Hz" + control) is None, hex(ord(control))
+
+
+_EVERYTHING_IEC = parser_for(Convention.IEC_81346, Convention.KKS, Convention.ANSI)
+
+
+def test_rework_2_the_fast_path_agrees_with_the_slow_one() -> None:
+
+    rules = _CN.rules
+    alphabet = ["3", "7", "k", "K", "V", "A", ".", "-", " ", "\t", chr(0), chr(127), "x"]
+
+    for size in range(1, 5):
+        for chars in itertools.product(alphabet, repeat=size):
+            text = "".join(chars)
+            if not text.strip():
+                continue
+            slow = read_rating(folded(text), rules) is not None
+            canonical = "".join(c for c in text if c not in " \t\x00\x7f").upper()
+            fast = _CN._rated(canonical, text)
+            assert fast == slow or canonical in rules.voltage_labels, repr(text)
+
+
+def test_rework_s1_a_group_carries_the_text_flags_to_its_members() -> None:
+    combining = chr(0x0301)
+    zwsp = chr(0x200B)
+    lookalike = f"X7:4{combining}1,42,43"
+    for text in (lookalike, f"20XYZ10AB13{zwsp}1/2/3", f"X7:41,4{combining}2,43"):
+        parser = _KKS
+        tally = parser.tally([text])
+        assert tally.conventions.get(Convention.IEC_81346, 0) == 0, text
+        assert tally.conventions.get(Convention.KKS, 0) == 0, text
+        found = parser.parse(text)
+        assert found is not None and found.group is not None and not found.valid
+        assert all(m.identifier is None or not m.identifier.valid for m in found.group.members), (
+            text
+        )
+    ranged = _CN.tally([f"QS{combining}7-QS9"])
+    assert ranged.conventions == {}
+    probe = parser_for(Convention.IEC_81346).tally([f"20XYZ10AB131/{zwsp}2/3"])
+    assert probe.conventions.get(Convention.KKS, 0) == 0
+    clean = _KKS.tally(["X7:41,42,43"])
+    assert clean.conventions == {Convention.IEC_81346: 3}
+
+
+def test_rework_s2_a_tally_expands_a_bounded_number_of_members() -> None:
+
+    page = ["QS1-QS64"] * 100
+    tally = _CN.tally(page)
+    assert tally.conventions[Convention.CN_LETTER_CODES] <= TALLY_MEMBER_BUDGET
+    assert tally.tokens == 100
+    # a normal page is counted exactly
+    normal = ["X7:41,42,43"] * 20 + ["QS7-QS9"] * 20 + ["-K5"] * 100
+    counts = parser_for(Convention.IEC_81346, Convention.CN_LETTER_CODES).tally(normal).conventions
+    assert counts[Convention.IEC_81346] == 160 and counts[Convention.CN_LETTER_CODES] == 60
+    started = time.perf_counter()
+    _CN.tally(["10A-73A"] * 200)
+    assert time.perf_counter() - started < 1.0
+
+
+def test_rework_6_a_group_is_never_read_from_a_hint() -> None:
+    assert _IEC.parse("X7:41,42,43", hint=_GROUP) is None
+
+
+def test_rework_5_the_64th_member_keeps_its_key() -> None:
+    found = _group(_CN, "QS1-QS64")
+    assert len(found.group.members) == 64  # type: ignore[union-attr]
+    assert "QS64" in found.forms.search_keys and len(found.forms.search_keys) == 65

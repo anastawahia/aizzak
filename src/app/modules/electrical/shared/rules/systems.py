@@ -99,20 +99,14 @@ class KksRules:
     evidence_min_level: int = 2  # D-36: the shallowest level the tally counts as KKS evidence
     # F3 (gap 33): the one character a tag may carry between two parts (20XYZ10AB123-CD45)
     part_separators: frozenset[str] = frozenset()
-    # F3: the shortest text a near miss is reported for (kks.malformed); replaces ``shortest``
+    # F3: the shortest text a near miss is reported for (kks.malformed)
     near_miss_min_length: int = 7
     # derived once from ``parts`` and ``forms``, so the parser never rebuilds them per token
     spec: KksSpec = field(init=False, repr=False, compare=False)
-    shortest: int = field(init=False, repr=False, compare=False)  # fewest characters of a form
 
     def __post_init__(self) -> None:
         spec = tuple((f.name, tuple((p, self.parts[p].mask) for p in f.parts)) for f in self.forms)
-        shortest = min(
-            sum(sum(1 for c in self.parts[p].mask if c in "NA") for p in f.parts)
-            for f in self.forms
-        )
         object.__setattr__(self, "spec", spec)
-        object.__setattr__(self, "shortest", shortest)
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,7 +8,11 @@ import time
 import pytest
 
 from app.modules.electrical.shared.kinds import Convention, IdentifierKind
-from app.modules.electrical.shared.normalization import canonical_form, has_enclosed_number
+from app.modules.electrical.shared.normalization import (
+    canonical_form,
+    has_enclosed_number,
+    is_space,
+)
 from app.modules.electrical.shared.tokens import split_candidates
 from tests.unit.support_electrical_shared import parser_for
 
@@ -91,3 +95,12 @@ def test_tally_reads_the_candidates_of_a_word_not_the_word() -> None:
     assert tally.tokens == 3
     assert tally.identifiers == 3
     assert tally.conventions[Convention.CN_LETTER_CODES] == 3
+
+
+def test_rework_s4_the_controls_that_are_hidden_are_no_word_break() -> None:
+    for code in (0x1C, 0x1D, 0x1E, 0x1F, 0x85):
+        assert not is_space(chr(code))
+        assert split_candidates("QS7" + chr(code) + "QS8") == ("QS7" + chr(code) + "QS8",)
+    for code in (0x20, 0x09, 0x0A, 0xA0, 0x3000):
+        assert is_space(chr(code))
+        assert split_candidates("QS7" + chr(code) + "QS8") == ("QS7", "QS8")
