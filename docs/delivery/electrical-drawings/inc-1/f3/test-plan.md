@@ -179,6 +179,40 @@ test-rules: OK
 
 (بعد آخر تشغيل كامل غيّرتُ سطراً واحداً في اختباري يشدّد تأكيداً، وأعدتُ تشغيل ملفي وruff وM‑04: كلها خضراء.)
 
-**ملاحظات تبقى للمنسّق (ليست أخطاء):** M‑1 (`1X-37',38'` مجموعة غير صالحة) وM‑3 (`X7:41,abc` تقرأ `abc` نقطة) كما هما، قرارا تصميم. وعند استنفاد الميزانية تُترك المجموعة غير مقروءة ويُعدّ ما قبلها فقط، وهذا مقصود بنص S‑2.
+**ملاحظات تبقى للمنسّق (ليست أخطاء):** M‑1 (`1X-37',38'` مجموعة غير صالحة) وM‑3 (`X7:41,abc` تقرأ `abc` نقطة) كما هما، قرارا تصميم. وعند استنفاد الميزانية يُعدّ ما قبلها فقط. (**تصحيح في إعادة الاختبار 2:** كانت هذه الجملة تقول إن المجموعة «تُترك غير مقروءة»، وكان ذلك خطأً للنصوص التي يقرؤها `_ORDER` بنوع آخر: `X23-X37` تحت IEC و`1X-64X` تحت CN كانتا تُقرآن طرفاً وتُعدّان دليلاً بعد النفاد. أُغلق في 7653020، انظر القسم 7.)
+
+## 7. إعادة الاختبار 2 (HEAD = 7653020)
+
+**الحكم: PASS.** الإصلاح يغلق ر‑1 في مراجعة الشيفرة وS‑6 (1) و(2) في المراجعة الأمنية، ولم أجد خطأً جديداً. أضفتُ 82 حالة (صار الملف 393 حالة) (دوال `test_rework2_*`) إلى `tests/unit/test_electrical_f3_qa.py`.
+
+**تحقّق من أن الاختبارات تكشف الخطأ:** شغّلتُها على شيفرة `9c87910` (نسخة `git archive` خارج المستودع): فشلت 25 حالة من `test_rework2_*` (منها `X23-X37` تحت IEC و`1X-64X` تحت CN). وعلى 7653020 كلها خضراء.
+
+| البند | ما تحققتُ منه | الاختبار |
+|---|---|---|
+| ر‑1 / S‑6 (1): مجموعة رفضتها الميزانية لا تسقط إلى نوع آخر | كل شكل (نطاق، قائمة، قائمة لاحقة بـ`/` و`\`) تحت كل القواعد السبع (iec، cn، kks، ansi، full، vendor، vendor_ansi): بميزانية `[0]` يعيد `_parse` القيمة `None`، ونص ليس مجموعة لا يتأثر. وبـ`TALLY_MEMBER_BUDGET = 0` لا يعدّ `tally` شيئاً من أي مجموعة، لا اصطلاحاً ولا مرجعاً ولا عائلة | `Q::test_rework2_a_refused_group_falls_through_to_no_kind` (63 حالة، 9 نصوص × 7 قواعد)، `Q::test_rework2_a_tally_with_no_budget_counts_no_group_and_nothing_else` (7)، `Q::test_rework2_a_refused_group_is_not_a_terminal_or_a_code_under_any_convention` |
+| النفاد عند 2000 بالضبط | بعد 40 نطاقاً من 50 (أو قوائم أو قوائم لاحقة، وفي المسبار KKS) لا يضيف `X23-X37` ولا `1X-64X` ولا قائمة ولا نطاق ولا قائمة لاحقة شيئاً، ويزيد `tokens` فقط. ورمز مفرد ليس مجموعة (`1X-37`، `QS7`) يُعدّ كالعادة | `Q::test_rework2_after_the_budget_is_spent_at_exactly_2000_nothing_more_counts` (8)، `Q::test_rework2_a_single_token_that_is_no_group_still_counts_after_the_budget` |
+| حدّ الميزانية الأخير | بقاء عضوين: تدخل قائمة بعضوين وقائمة لاحقة بعضوين، ولا تدخل قائمة بثلاثة ولا نطاق بثلاثة (تُترك كلها)؛ وبقاء عضو واحد: تدخل المفردات فقط | `Q::test_rework2_the_last_two_members_of_the_budget_fit_exactly` |
+| ت‑1 / S‑6 (2): القائمة تدفع متأخرة | قائمة بأول بند غير مقروء (`4$,QS8`) لا تكلّف شيئاً فيبقى رمز مفرد بعدها قابلاً للقراءة. وقائمة فوق السقف 64 ونطاق فوق السقف لا يكلّفان شيئاً، ويعيدان المجموعة المعلَّمة `group.too_many_members` حتى بميزانية `[0]` | `Q::test_rework2_a_list_pays_only_after_it_reads_and_is_within_the_cap` |
+
+**بوابات إعادة الاختبار 2** (من `/home/AIZZAK`، على الشجرة الحالية):
+
+```
+$ .venv/bin/ruff format --check .
+1018 files already formatted
+$ .venv/bin/ruff check .
+All checks passed!
+$ .venv/bin/mypy src
+Success: no issues found in 555 source files
+$ .venv/bin/lint-imports
+Contracts: 9 kept, 0 broken.
+$ .venv/bin/pytest -rs tests/unit tests/architecture tests/eval
+9888 passed, 37 skipped, 7 warnings in 291.62s (0:04:51)
+   (الـ37: 19 بسبب RUN_EDGE_FILES_TEST=1 و18 بسبب RUN_ELE_PARSE_CONTAINER_TEST=1)
+$ .venv/bin/python -m tests.eval.electrical.m04_identifiers --out <scratch>
+M-04 = 1.0000 over 286 cases
+$ deploy/prometheus/test-rules.sh
+SUCCESS: 31 rules found
+test-rules: OK
+```
 
 </div>

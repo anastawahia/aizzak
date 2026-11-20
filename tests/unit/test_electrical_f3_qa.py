@@ -15,6 +15,7 @@ import pytest
 from services.ele_parse import SERVICE_VERSION, contract
 from services.ele_parse import inspect as ele_inspect
 
+import app.modules.electrical.shared.parser as parser_module
 from app.modules.electrical.shared.connection_points import check_label, is_valid_label
 from app.modules.electrical.shared.groups import (
     inherit,
@@ -1223,3 +1224,129 @@ def test_rework_a_long_word_never_overfills_the_sample() -> None:
     started = time.perf_counter()
     assert len(ele_inspect._tokens(_words(huge), 200)) == 200
     assert time.perf_counter() - started < 2.0
+
+
+# --- re-test 2: a group the budget refuses is an unread token, never another kind ------------
+
+_GROUP_TEXTS = [
+    "X23-X37",  # a range: no member reads under IEC, it must not read as a terminal either
+    "1X-64X",  # a range that reads as a terminal or a code when it is not one
+    "QS7-QS9",
+    "X7:41,42,43",
+    "QS7,QS8",
+    "X7:41,37KV",
+    "20XYZ10AB131/2/3",
+    "QS7\\8",
+    "QS7\\8\\9",
+]
+_PARSERS = {
+    "iec": IEC,
+    "cn": CN,
+    "kks": KKS,
+    "ansi": ANSI,
+    "full": FULL,
+    "vendor": VENDOR,
+    "vendor_ansi": VENDOR_ANSI,
+}
+
+
+@pytest.mark.parametrize("name", sorted(_PARSERS))
+@pytest.mark.parametrize("text", _GROUP_TEXTS)
+def test_rework2_a_refused_group_falls_through_to_no_kind(name: str, text: str) -> None:
+    parser = _PARSERS[name]
+    free = parser._parse(text, None, None)
+    refused = parser._parse(text, None, [0])
+    if free is not None and free.kind is _GROUP:
+        assert refused is None, (name, text, refused)
+    else:
+        assert refused == free  # a text that is no group is not touched by the budget
+
+
+@pytest.mark.parametrize("name", sorted(_PARSERS))
+def test_rework2_a_tally_with_no_budget_counts_no_group_and_nothing_else(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(parser_module, "TALLY_MEMBER_BUDGET", 0)
+    parser = _PARSERS[name]
+    for text in _GROUP_TEXTS:
+        free = parser.parse(text)
+        if free is None or free.kind is not _GROUP:
+            continue
+        tally = parser.tally([text] * 5)
+        assert tally.conventions == {} and tally.identifiers == 0, (name, text)
+        assert tally.cross_reference_formats == {} and tally.plc_families == {}
+    # a token that is no group still counts: the budget never touches a plain identifier
+    assert parser.tally(["X7:41", "QS7"]).tokens == 2
+
+
+@pytest.mark.parametrize(
+    ("parser", "fillers", "text"),
+    [
+        (IEC, ["X7:1" + ",1" * 49] * 40, "X23-X37"),
+        (CN, ["QS1-QS50"] * 40, "1X-64X"),
+        (CN, ["QS1-QS50"] * 40, "QS1-QS3"),
+        (CN, ["QS1-QS50"] * 40, "QS7,QS8"),
+        (CN, ["QS1-QS50"] * 40, "QS7\\8"),
+        (KKS, ["20XYZ10AB131" + "/2" * 49] * 40, "20XYZ10AB131/2/3"),
+        (IEC, ["20XYZ10AB131" + "/2" * 49] * 40, "20XYZ10AB131/2/3"),  # the probe's budget
+        (IEC, ["X7:1" + ",1" * 49] * 40, "X7:41,42,43"),
+    ],
+)
+def test_rework2_after_the_budget_is_spent_at_exactly_2000_nothing_more_counts(
+    parser: IdentifierParser, fillers: list[str], text: str
+) -> None:
+    base = parser.tally(fillers)
+    more = parser.tally([*fillers, text, text])
+    assert sum(base.conventions.values()) == sum(more.conventions.values())
+    assert base.identifiers == more.identifiers
+    assert more.tokens == base.tokens + 2
+
+
+def test_rework2_a_single_token_that_is_no_group_still_counts_after_the_budget() -> None:
+    fillers = ["QS1-QS50"] * 40
+    assert CN.tally(fillers).identifiers == 2000
+    assert CN.tally([*fillers, "1X-37"]).identifiers == 2001  # a terminal-shaped single reading
+    assert CN.tally([*fillers, "QS7"]).identifiers == 2001
+
+
+def test_rework2_the_last_two_members_of_the_budget_fit_exactly() -> None:
+    base = ["QS1-QS50"] * 39 + ["QS1-QS48"]  # 1,998 members: two are left
+    assert _count(CN, base) == (1998, 1998)
+    assert _count(CN, [*base, "QS7,QS8"]) == (2000, 2000)  # the list takes them
+    assert _count(CN, [*base, "QS7,QS8,QS9"]) == (1998, 1998)  # three do not fit, none are read
+    assert _count(CN, [*base, "QS7\\8"]) == (2000, 2000)
+    assert _count(CN, [*base, "QS7-QS9"]) == (1998, 1998)
+    one_left = ["QS1-QS50"] * 39 + ["QS1-QS49"]
+    assert _count(CN, [*one_left, "QS7,QS8"]) == (1999, 1999)
+
+
+def test_rework2_a_list_pays_only_after_it_reads_and_is_within_the_cap() -> None:
+    spent = ["QS1-QS50"] * 39 + ["QS1-QS49"]  # one member left
+    # an unreadable first item reads no group and costs nothing: a later single still fits
+    assert _count(CN, [*spent, "4$,QS8", "QS9"]) == (2000, 2000)
+    assert _count(CN, ["QS1-QS50"] * 40 + ["4$,QS8"]) == (2000, 2000)
+    # an over-cap list is flagged, expands nothing, and costs nothing
+    over = "X7:1" + ",1" * 97
+    assert _count(IEC, [over] * 100 + ["X7:1" + ",1" * 49] * 40) == (2000, 2000)
+    assert _count(IEC, ["X7:1" + ",1" * 49] * 40 + [over]) == (2000, 2000)
+    found = IEC._parse(over, None, [0])  # even with no budget left it is the flagged group
+    assert (
+        found is not None
+        and found.group is not None
+        and found.issues == ("group.too_many_members",)
+    )
+    # an over-cap range likewise
+    assert _count(CN, ["QS1-QS50"] * 40 + ["QS1-QS9999"]) == (2000, 2000)
+    refused = CN._parse("QS1-QS9999", None, [0])
+    assert refused is not None and refused.issues == ("group.too_many_members",)
+
+
+def test_rework2_a_refused_group_is_not_a_terminal_or_a_code_under_any_convention() -> None:
+    for name, parser in _PARSERS.items():
+        for text in ("X23-X37", "1X-64X", "QS7-QS9"):
+            free = parser._parse(text, None, None)
+            if free is not None and free.kind is _GROUP:
+                assert parser._parse(text, None, [0]) is None, (name, text)
+            refused = parser._parse(text, None, [1])  # a budget too small for the range
+            if free is not None and free.kind is _GROUP and free.group and free.group.members:
+                assert refused is None, (name, text)
