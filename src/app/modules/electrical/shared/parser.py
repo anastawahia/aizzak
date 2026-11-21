@@ -236,7 +236,7 @@ class IdentifierParser:
 
     def _group(
         self, forms: NormalizedForms, budget: list[int] | None = None
-    ) -> ParsedIdentifier | None | _OverBudget:
+    ) -> ParsedIdentifier | _OverBudget | None:
         """F3 (FR-ID-19): the text as a range, a list or a suffix list, or None (no group). A
         range is tried first (before the terminals: ``X23-X37``), then a list, then a suffix
         list. ``budget`` (a tally's) is the members left to expand: a group that would exceed it
@@ -276,7 +276,7 @@ class IdentifierParser:
         cased: str,
         limit: int,
         budget: list[int] | None,
-    ) -> ParsedIdentifier | None | _OverBudget:
+    ) -> ParsedIdentifier | _OverBudget | None:
         if not items[0]:
             return None
         written = tuple(cased.split(LIST_SEPARATOR))
@@ -309,7 +309,7 @@ class IdentifierParser:
 
     def _suffix_group(
         self, forms: NormalizedForms, cased: str, limit: int, budget: list[int] | None
-    ) -> ParsedIdentifier | None | _OverBudget:
+    ) -> ParsedIdentifier | _OverBudget | None:
         canonical = forms.canonical
         for separator, kinds in self._rules.groups.suffix_lists.items():
             if separator not in canonical:
