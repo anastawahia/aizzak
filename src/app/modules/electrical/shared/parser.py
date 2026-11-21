@@ -29,23 +29,37 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from app.modules.electrical.shared.ansi import (
     is_ansi_evidence,
-    is_bare_ansi_number,
     parse_ansi_compound,
     parse_ansi_compound_in_context,
     parse_ansi_device,
     parse_ansi_device_in_context,
     read_compound,
 )
-from app.modules.electrical.shared.connection_points import parse_connection_point
+from app.modules.electrical.shared.connection_points import is_valid_label, parse_connection_point
 from app.modules.electrical.shared.cross_references import parse_cross_reference
+from app.modules.electrical.shared.groups import (
+    ISSUE_EMPTY_MEMBER,
+    ISSUE_MEMBER_INVALID,
+    ISSUE_MEMBER_UNREADABLE,
+    ISSUE_TOO_MANY,
+    LIST_SEPARATOR,
+    RANGE_SEPARATOR,
+    inherit,
+    list_items,
+    range_members,
+    suffix_members,
+)
 from app.modules.electrical.shared.kinds import (
     ADDITIVE_CONVENTIONS,
     Convention,
     ConventionTally,
+    GroupForm,
+    GroupMember,
+    IdentifierGroup,
     IdentifierKind,
     NormalizedForms,
     ParsedIdentifier,
@@ -57,12 +71,17 @@ from app.modules.electrical.shared.normalization import (
     ISSUE_NON_ASCII,
     NON_INVALIDATING_ISSUES,
     canonical_form,
+    dedupe,
+    folded,
+    has_enclosed_number,
     normalize,
     text_issues,
 )
 from app.modules.electrical.shared.plc_siemens import parse_plc_address
+from app.modules.electrical.shared.ratings import read_rating
 from app.modules.electrical.shared.reference_designation import parse_reference_designation
 from app.modules.electrical.shared.terminals import parse_bridge, parse_terminal
+from app.modules.electrical.shared.tokens import split_candidates
 from app.modules.electrical.shared.voltages import parse_voltage
 from app.modules.electrical.shared.wire_numbers import parse_wire_number
 
@@ -72,6 +91,8 @@ if TYPE_CHECKING:
 # Longer text is prose. The bound applies to the raw text AND to the canonical form (NFKC
 # can expand one character into many), so it bounds every regular expression's input.
 MAX_TEXT_CHARS = 200
+MAX_GROUP_KEYS = 65  # F3: a group's own form and the keys of up to 64 members
+TALLY_MEMBER_BUDGET = 2_000  # F3 (S-2): group members one tally call may expand
 
 _Parse = Callable[[str, NormalizedForms, "IdentifierRules"], ParsedIdentifier | None]
 
@@ -107,8 +128,11 @@ def _alternatives(
     cross-reference (either way round), a KKS tag with a prefix against an IEC designation."""
     canonical = forms.canonical
     if Convention.ANSI in rules.conventions:
-        if found.kind in _BARE_KINDS and is_bare_ansi_number(canonical):
-            return (IdentifierKind.ANSI_DEVICE,)
+        if (
+            found.kind in _BARE_KINDS
+            and parse_ansi_device_in_context(canonical, forms, rules) is not None
+        ):
+            return (IdentifierKind.ANSI_DEVICE,)  # F3: a bare number, or a wire a pattern read
         if found.kind is IdentifierKind.ANSI_DEVICE and found.ansi is not None:
             if (
                 len(found.ansi.functions) > 1
@@ -146,19 +170,44 @@ class IdentifierParser:
 
     def parse(self, text: str, *, hint: IdentifierKind | None = None) -> ParsedIdentifier | None:
         """None when the text is no identifier at all; a ParsedIdentifier with
-        valid=False when it is one, malformed (FR-ID-10)."""
+        valid=False when it is one, malformed (FR-ID-10). ``hint=IDENTIFIER_GROUP`` always gives
+        None: a group is read from the text alone (F3), never on a caller's say-so."""
+        return self._parse(text, hint, None)
+
+    def _parse(
+        self, text: str, hint: IdentifierKind | None, budget: list[int] | None
+    ) -> ParsedIdentifier | None:
+        if hint is IdentifierKind.IDENTIFIER_GROUP:
+            return None
         if not text.strip() or len(text) > MAX_TEXT_CHARS:
             return None
+        if hint is None and has_enclosed_number(text):
+            return None  # F3 (gap 14): ⑰ is a marker, not wire 17 (NFKC would fold it to 17)
         forms = normalize(text)
         if len(forms.canonical) > MAX_TEXT_CHARS or not any(ch.isalnum() for ch in forms.canonical):
             return None
         if not forms.canonical.isascii():
-            return self._parse_non_ascii(text, forms, hint)
-        return self._first(forms, hint, text)
+            return self._parse_non_ascii(text, forms, hint, budget)
+        return self._first(forms, hint, text, budget=budget)
 
     def _first(
-        self, forms: NormalizedForms, hint: IdentifierKind | None, text: str
+        self,
+        forms: NormalizedForms,
+        hint: IdentifierKind | None,
+        text: str,
+        *,
+        grouped: bool = True,
+        budget: list[int] | None = None,
     ) -> ParsedIdentifier | None:
+        if hint is None:
+            if self._rated(forms.canonical, text):
+                return None  # F3 (FR-ID-20): a value with a unit is a rating, never an identifier
+            group = self._group(forms, budget) if grouped else None
+            if group is _OVER_BUDGET:
+                return None  # S-6: a group the budget refused is an unread token, never a terminal
+            if isinstance(group, ParsedIdentifier):
+                issues = text_issues(text)
+                return _flag_members(_flag_text(group, issues), issues)
         candidates: Iterable[_Parse] = (
             _HINTED[hint]
             if hint is not None and hint in _HINTED
@@ -172,8 +221,163 @@ class IdentifierParser:
                 return _flag_text(found, text_issues(text))
         return None
 
+    def _member(self, text: str, cased: str | None = None) -> ParsedIdentifier | None:
+        """One member of a group, read alone and never as a group (the depth is 1). ``cased`` is
+        the member as written (the rating check needs its case); None when it is a rating."""
+        if self._rated(text, cased if cased is not None else text):
+            return None
+        return self._first(normalize(text), None, text, grouped=False)
+
+    @staticmethod
+    def _cased(forms: NormalizedForms) -> str:
+        """The text folded but not upper-cased, to split into members that keep their case."""
+        cased = folded(forms.original)
+        return cased if len(cased) == len(forms.canonical) else forms.canonical
+
+    def _group(
+        self, forms: NormalizedForms, budget: list[int] | None = None
+    ) -> ParsedIdentifier | _OverBudget | None:
+        """F3 (FR-ID-19): the text as a range, a list or a suffix list, or None (no group). A
+        range is tried first (before the terminals: ``X23-X37``), then a list, then a suffix
+        list. ``budget`` (a tally's) is the members left to expand: a group that would exceed it
+        is ``_OVER_BUDGET``, which the caller reads as an unread token and NEVER as "no group"
+        (the text would fall through to the terminals, S-6)."""
+        canonical = forms.canonical
+        cased = self._cased(forms)
+        limit = self._rules.groups.max_members
+        if (
+            RANGE_SEPARATOR in canonical
+            and not self._rating_end(cased)
+            and (ranged := range_members(canonical, limit))
+        ):
+            members, too_many = ranged
+            if not _spend(budget, len(members)):
+                return _OVER_BUDGET
+            return self._group_result(
+                forms, GroupForm.RANGE, RANGE_SEPARATOR, [self._plain(t) for t in members], too_many
+            )
+        if (items := list_items(canonical)) is not None:
+            return self._list_group(forms, items, cased, limit, budget)
+        return self._suffix_group(forms, cased, limit, budget)
+
+    def _rating_end(self, cased: str) -> bool:
+        """A range one of whose ends is a rating (``1kV-3kV``) is no range."""
+        if cased.count(RANGE_SEPARATOR) != 1:
+            return False
+        return any(self._rated(end.upper(), end) for end in cased.split(RANGE_SEPARATOR))
+
+    def _plain(self, text: str) -> tuple[str, ParsedIdentifier | None]:
+        return text, self._member(text)
+
+    def _list_group(
+        self,
+        forms: NormalizedForms,
+        items: tuple[str, ...],
+        cased: str,
+        limit: int,
+        budget: list[int] | None,
+    ) -> ParsedIdentifier | _OverBudget | None:
+        if not items[0]:
+            return None
+        written = tuple(cased.split(LIST_SEPARATOR))
+        if len(written) != len(items):
+            written = items
+        first = self._member(items[0], written[0])
+        if first is None:
+            return None
+        if len(items) > limit:
+            return self._group_result(forms, GroupForm.LIST, LIST_SEPARATOR, [], True)
+        if not _spend(budget, len(items)):  # only a list that reads and is within the cap pays
+            return _OVER_BUDGET
+        members: list[tuple[str, ParsedIdentifier | None]] = [(items[0], first)]
+        for item, as_written in zip(items[1:], written[1:], strict=True):
+            alone = self._member(item, as_written) if item else None
+            inherited = (
+                first.connection_point is not None
+                and bool(item)
+                and is_valid_label(item)
+                and not self._rated(item, as_written)  # a rating takes no head (37kV)
+                and (alone is None or alone.kind in _BARE_KINDS)
+            )
+            if inherited:
+                assert first.connection_point is not None
+                text = inherit(items[0], first.connection_point, item)
+                members.append((text, self._member(text)))
+            else:
+                members.append((item, alone))
+        return self._group_result(forms, GroupForm.LIST, LIST_SEPARATOR, members, False)
+
+    def _suffix_group(
+        self, forms: NormalizedForms, cased: str, limit: int, budget: list[int] | None
+    ) -> ParsedIdentifier | _OverBudget | None:
+        canonical = forms.canonical
+        for separator, kinds in self._rules.groups.suffix_lists.items():
+            if separator not in canonical:
+                continue
+            head, *tails = canonical.split(separator)
+            written = (
+                cased.split(separator, maxsplit=1)[0] if len(cased) == len(canonical) else head
+            )
+            first = self._member(head, written) if head else None
+            if first is None or first.kind not in kinds:
+                continue
+            if len(tails) + 1 > limit:
+                return self._group_result(forms, GroupForm.SUFFIX_LIST, separator, [], True)
+            texts = suffix_members(head, tuple(tails))
+            if texts is None:
+                continue
+            if not _spend(budget, len(texts)):
+                return _OVER_BUDGET
+            members = [(head, first), *(self._plain(t) for t in texts[1:])]
+            return self._group_result(forms, GroupForm.SUFFIX_LIST, separator, members, False)
+        return None
+
+    def _group_result(
+        self,
+        forms: NormalizedForms,
+        form: GroupForm,
+        separator: str,
+        read: list[tuple[str, ParsedIdentifier | None]],
+        too_many: bool,
+    ) -> ParsedIdentifier:
+        issues: list[str] = [ISSUE_TOO_MANY] if too_many else []
+        for text, identifier in read:
+            if not text:
+                issues.append(ISSUE_EMPTY_MEMBER)
+            elif identifier is None:
+                issues.append(ISSUE_MEMBER_UNREADABLE)
+            elif not identifier.valid:
+                issues.append(ISSUE_MEMBER_INVALID)
+        members = tuple(GroupMember(text, identifier) for text, identifier in read)
+        conventions = {m.identifier.convention for m in members if m.identifier is not None}
+        keys = dedupe(
+            [forms.canonical, *(m.identifier.forms.canonical for m in members if m.identifier)]
+        )[:MAX_GROUP_KEYS]
+        return ParsedIdentifier(
+            kind=IdentifierKind.IDENTIFIER_GROUP,
+            convention=conventions.pop() if len(conventions) == 1 else None,
+            forms=NormalizedForms(forms.original, forms.canonical, keys),
+            valid=not issues,
+            issues=tuple(dict.fromkeys(issues)),
+            group=IdentifierGroup(form, separator, members),
+        )
+
+    def _rated(self, canonical: str, text: str) -> bool:
+        """A supply voltage label (``24VDC``, ``+24V``, ``0V``, or the profile's) is a voltage
+        (FR-ID-08), whatever its shape; any other value with a unit of ``[ratings]`` is a rating.
+        ``text`` is as written: a unit such as ``kV`` is read in its written case."""
+        if canonical in self._rules.voltage_labels:
+            return False
+        if text.isascii() and not canonical[-1:].isalpha():
+            return False  # a rating ends in its unit: skip the fold for the common text
+        return read_rating(folded(text), self._rules) is not None
+
     def _parse_non_ascii(
-        self, text: str, forms: NormalizedForms, hint: IdentifierKind | None
+        self,
+        text: str,
+        forms: NormalizedForms,
+        hint: IdentifierKind | None,
+        budget: list[int] | None = None,
     ) -> ParsedIdentifier | None:
         """INC1-Q-6: the identifier hiding behind non-ASCII characters is reported invalid,
         under its own canonical form (so it never collides with the plain one)."""
@@ -184,15 +388,16 @@ class IdentifierParser:
         )
         if not skeleton.isascii() or not any(ch.isalnum() for ch in skeleton):
             return None  # other scripts (Chinese prose, Cyrillic) are no identifier here
-        found = self._first(normalize(skeleton), hint, text)
+        found = self._first(normalize(skeleton), hint, text, budget=budget)
         if found is None:
             return None
-        return replace(
+        flagged = replace(
             found,
             forms=NormalizedForms(forms.original, forms.canonical, (forms.canonical,)),
             valid=False,
             issues=tuple(dict.fromkeys((*found.issues, ISSUE_NON_ASCII))),
         )
+        return _flag_members(flagged, (ISSUE_NON_ASCII,))  # S-1: the members are lookalikes too
 
     def tally(self, tokens: Iterable[str]) -> ConventionTally:
         """What a bag of tokens says about the conventions (FR-ING-12). The device conventions,
@@ -209,22 +414,25 @@ class IdentifierParser:
             else IdentifierParser(self._rules.with_additive())
         )
         seen = parsed = 0
+        budget = [TALLY_MEMBER_BUDGET]  # S-2: group members this call may expand, probe included
         for token in tokens:
             seen += 1
-            found = self.parse(token)
-            if found is not None:
-                parsed += 1
-                if ISSUE_NON_ASCII not in found.issues:
-                    self._count(found, conventions, families, formats)
-            if probe is not None and _may_be_additive(token):
-                extra = probe.parse(token)
-                if (
-                    extra is not None
-                    and extra.convention in ADDITIVE_CONVENTIONS
-                    and extra.convention not in enabled
-                    and _is_evidence(extra, self._rules)
-                ):
-                    conventions[extra.convention] += 1
+            for candidate in split_candidates(token):  # F3 (gap 34): a word may hold several
+                found = self._parse(candidate, None, budget)
+                if found is not None:
+                    for reading in _readings(found):  # F3: each member of a group is one
+                        parsed += 1
+                        if ISSUE_NON_ASCII not in reading.issues:
+                            self._count(reading, conventions, families, formats)
+                if probe is not None and _may_be_additive(candidate):
+                    extra = probe._parse(candidate, None, budget)
+                    for reading in () if extra is None else _readings(extra):
+                        if (
+                            reading.convention in ADDITIVE_CONVENTIONS
+                            and reading.convention not in enabled
+                            and _is_evidence(reading, self._rules)
+                        ):
+                            conventions[reading.convention] += 1
         return ConventionTally(
             conventions=MappingProxyType(dict(sorted(conventions.items()))),
             plc_families=MappingProxyType(dict(sorted(families.items()))),
@@ -249,6 +457,42 @@ class IdentifierParser:
             families[found.plc.family] += 1
         if found.kind is IdentifierKind.CROSS_REFERENCE and found.variant is not None:
             formats[found.variant] += 1
+
+
+class _OverBudget:
+    """The answer of ``_group`` for a group a tally's budget refused (not "no group")."""
+
+
+_OVER_BUDGET: Final = _OverBudget()
+
+
+def _spend(budget: list[int] | None, members: int) -> bool:
+    """Take ``members`` from a tally's budget; False (nothing taken) when it is not enough."""
+    if budget is None:
+        return True
+    if budget[0] < members:
+        return False
+    budget[0] -= members
+    return True
+
+
+def _flag_members(found: ParsedIdentifier, issues: tuple[str, ...]) -> ParsedIdentifier:
+    """S-1: the text flags of a group's text reach each member (a lookalike or hidden character
+    in a list is no cleaner than alone), so the tally counts none of them as evidence."""
+    if found.group is None or not issues:
+        return found
+    members = tuple(
+        GroupMember(m.text, None if m.identifier is None else _flag_text(m.identifier, issues))
+        for m in found.group.members
+    )
+    return replace(found, group=replace(found.group, members=members))
+
+
+def _readings(found: ParsedIdentifier) -> tuple[ParsedIdentifier, ...]:
+    """What a parse counts: the identifier itself, or for a group each member that read (F3)."""
+    if found.group is None:
+        return (found,)
+    return tuple(m.identifier for m in found.group.members if m.identifier is not None)
 
 
 def _may_be_additive(token: str) -> bool:

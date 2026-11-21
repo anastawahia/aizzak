@@ -7,4 +7,4 @@ volume read-only and answers JSON. Every request runs in a fresh child process u
 ``resource`` limits, so a hostile PDF can cost one bounded child and nothing else.
 """
 
-SERVICE_VERSION = "1.0.0"
+SERVICE_VERSION = "1.1.0"

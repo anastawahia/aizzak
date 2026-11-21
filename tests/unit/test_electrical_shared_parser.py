@@ -61,6 +61,18 @@ def test_every_appendix_a_example_parses_to_its_kind(kind: IdentifierKind, text:
     assert found.forms.canonical and found.forms.search_keys
 
 
+# The F3 examples (SRS 0.21 Appendix A, D-37), invented; each has an `appendix-a` case.
+_APPENDIX_A_F3 = [
+    "X7:41,42,43", "QS7-QS9", "QS7\\8", "20XYZ10AB131/2/3", "27.6E", ".6E",
+    "20XYZ10AB123-CD45", "20XYZ", "1X-37'", "59G2",
+]  # fmt: skip
+
+
+def test_f3_ac_27_every_f3_appendix_example_has_an_appendix_a_case() -> None:
+    sourced = {c["text"] for c in _CASES if c.get("source") == "appendix-a"}
+    assert set(_APPENDIX_A_F3) <= sourced
+
+
 @pytest.mark.parametrize(
     ("kind", "text"), [(k, t) for k, texts in _APPENDIX_A_F2.items() for t in texts]
 )
@@ -80,6 +92,7 @@ def test_appendix_a_connection_points_carry_label_and_role(text: str) -> None:
 def test_every_appendix_a_example_is_in_the_case_set() -> None:
     texts = {c["text"] for c in _CASES}
     needed = {t for group in (*_APPENDIX_A.values(), *_APPENDIX_A_F2.values()) for t in group}
+    needed |= set(_APPENDIX_A_F3)
     needed |= set(_CONNECTION_POINT_EXAMPLES)
     assert needed <= texts
 
@@ -199,13 +212,17 @@ def test_f2_ac_7_ansi_on_changes_only_the_listed_ambiguities() -> None:
         if after["kind"] == before["kind"]:  # a bare number: only the alternative is added
             assert {k: v for k, v in after.items() if k != "alternatives"} == before
             assert after["alternatives"] == ["ansi_device"]
-    # the compound against the cross-reference, and nothing else; 1KM and 2QF stay letter codes
-    assert {text for text, kind in changed.items() if kind == "ansi_device"} == {"12/3"}
+    # F3 (class rule): no existing case reads as an ANSI device any more, and 12/3 (numbers
+    # outside the table) stays a cross-reference that gains the ANSI alternative. 1KM and 2QF
+    # stay letter codes.
+    assert {text for text, kind in changed.items() if kind == "ansi_device"} == set()
+    assert changed.get("12/3") == "cross_reference"
     for text in ("1KM", "2QF"):
         found = ansi_on.parse(text)
         assert found is not None and found.kind is IdentifierKind.LETTER_CODE
-    compound = ansi_on.parse("12/3")
-    assert compound is not None and compound.alternatives == (IdentifierKind.CROSS_REFERENCE,)
+    crossing = ansi_on.parse("12/3")
+    assert crossing is not None and crossing.kind is IdentifierKind.CROSS_REFERENCE
+    assert crossing.alternatives == (IdentifierKind.ANSI_DEVICE,)
 
 
 def test_the_probe_filter_checks_the_length_first() -> None:

@@ -3,10 +3,22 @@ connection points and voltage labels."""
 
 from __future__ import annotations
 
+import copy
+from typing import Any
+
 import pytest
 
-from app.modules.electrical.shared.kinds import Convention, IdentifierKind
-from tests.unit.support_electrical_shared import PARSER, aspects, parse, parser_for
+from app.modules.electrical.shared.kinds import Convention, IdentifierKind, ParsedIdentifier
+from app.modules.electrical.shared.parser import IdentifierParser
+from app.modules.electrical.shared.rules import IdentifierRules, RuleError
+from tests.unit.support_electrical_shared import (
+    PARSER,
+    _selection,
+    aspects,
+    parse,
+    parser_for,
+)
+from tests.unit.test_electrical_shared_rules import _raw
 
 _TERMINAL = IdentifierKind.TERMINAL
 
@@ -153,3 +165,70 @@ def test_f2_ac_42_the_chinese_reading_and_the_xt_rule_stay() -> None:
     )  # the first form is unchanged
     chinese = parser_for(Convention.CN_LETTER_CODES, Convention.IEC_81346).parse("1X-25")
     assert chinese is not None and chinese.convention is Convention.CN_LETTER_CODES
+
+
+def _read(parser: IdentifierParser, text: str) -> ParsedIdentifier:
+    found = parser.parse(text)
+    assert found is not None, text
+    return found
+
+
+def test_f3_ac_20_letters_first_conventions_are_data() -> None:
+    cn = parser_for(Convention.CN_LETTER_CODES)
+    found = _read(cn, "X7:41")
+    assert found.kind is _TERMINAL and found.convention is Convention.CN_LETTER_CODES
+    # the unnarrowed rules, and IEC / GB/T, still read X under IEC first
+    assert parse("X7:41").convention is Convention.IEC_81346
+    both = parser_for(Convention.IEC_81346, Convention.CN_LETTER_CODES)
+    assert _read(both, "X7:41").convention is Convention.IEC_81346
+    gbt = parser_for(Convention.GBT_5094, Convention.CN_LETTER_CODES)
+    assert _read(gbt, "X7:41").convention is Convention.GBT_5094
+    # XT and TB keep their conventions
+    assert _read(cn, "XT1:5").convention is Convention.CN_LETTER_CODES
+    assert _read(parser_for(Convention.NFPA_JIC), "TB1:2").convention is Convention.NFPA_JIC
+    assert parser_for(Convention.IEC_81346).parse("XT1:5") is None
+    # without the table the reading is today's: X is IEC / GB/T only, so a Chinese-only file
+    # reads no X strip
+    bare = IdentifierRules.from_mapping(_without_letters_first())
+    assert bare.terminal_letters_first == {}
+    chinese = IdentifierParser(
+        bare.narrowed(_selection(conventions=frozenset({Convention.CN_LETTER_CODES})))
+    )
+    assert chinese.parse("X7:41") is None and chinese.parse("XT1:5") is not None
+
+
+def _without_letters_first() -> dict[str, Any]:
+    data = copy.deepcopy(_raw())
+    del data["terminals"]["letters_first"]
+    return data
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda d: d["terminals"]["letters_first"].update(X=[]),
+        lambda d: d["terminals"]["letters_first"].update(X=["nope"]),
+        lambda d: d["terminals"]["letters_first"].update(ZZ=["iec_81346"]),
+    ],
+)
+def test_f3_ac_20_a_bad_letters_first_entry_is_a_rule_error(mutate: Any) -> None:
+    data = copy.deepcopy(_raw())
+    mutate(data)
+    with pytest.raises(RuleError):
+        IdentifierRules.from_mapping(data)
+
+
+@pytest.mark.parametrize(
+    ("text", "point"), [("1X-37'", "37'"), ('1X-37"', '37"'), ("1X-37" + chr(0x2032), "37'")]
+)
+def test_f3_ac_19_a_prime_after_the_terminal_number_is_part_of_it(text: str, point: str) -> None:
+    iec = parser_for(Convention.IEC_81346)
+    found = _read(iec, text)
+    assert found.kind is _TERMINAL and found.valid and found.connection_point == point
+    plain = _read(iec, "1X-37")
+    assert plain.forms.canonical != found.forms.canonical
+    assert not set(plain.forms.search_keys) & set(found.forms.search_keys)
+    # the chain form and a letter code's point are as before
+    assert iec.parse("-K5:13'") is None
+    cn_code = _read(parser_for(Convention.CN_LETTER_CODES), "KM1:13'")
+    assert not cn_code.valid

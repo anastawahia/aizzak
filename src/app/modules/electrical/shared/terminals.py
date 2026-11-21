@@ -15,9 +15,11 @@ other bridge notation is a rule extension, not a silent guess.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import TYPE_CHECKING
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Final
 
 from app.modules.electrical.shared.connection_points import check_label, is_valid_label
 from app.modules.electrical.shared.kinds import (
@@ -35,7 +37,11 @@ if TYPE_CHECKING:
     from app.modules.electrical.shared.rules import IdentifierRules
 
 BRIDGE_SEPARATOR = "~"
-_CHARSET = re.compile(r"[A-Z0-9_=+\-&#.:/~]+", re.ASCII)
+_LETTERS_FIRST_DEFAULT: Final[Mapping[str, tuple[Convention, ...]]] = MappingProxyType(
+    {"XT": (Convention.CN_LETTER_CODES,), "TB": (Convention.NFPA_JIC,)}
+)
+_LETTERS_FIRST_OTHER: Final = (Convention.IEC_81346, Convention.GBT_5094)
+_CHARSET = re.compile(r"[A-Z0-9_=+\-&#.:/~'\"]+", re.ASCII)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,15 +109,18 @@ def _split(canonical: str, rules: IdentifierRules) -> _Terminal | None:
         convention = pick_convention(
             rules, *rules.terminal_digits_first.get(prefix, (Convention.CN_LETTER_CODES,))
         )
-    elif prefix == "XT":
-        convention = pick_convention(rules, Convention.CN_LETTER_CODES)
-    elif prefix == "TB":
-        convention = pick_convention(rules, Convention.NFPA_JIC)
     else:
-        convention = pick_convention(rules, Convention.IEC_81346, Convention.GBT_5094)
+        # F3 (gap 40): the letters-first conventions are the rules' (data) too; a prefix the
+        # table lacks reads as before (XT Chinese, TB NFPA/JIC, others IEC then GB/T)
+        convention = pick_convention(
+            rules,
+            *rules.terminal_letters_first.get(
+                prefix, _LETTERS_FIRST_DEFAULT.get(prefix, _LETTERS_FIRST_OTHER)
+            ),
+        )
     if convention is None:
         return None
-    point, issues = check_label(rules, match["point"])
+    point, issues = check_label(rules, match["point"], primed=True)
     return _Terminal((), strip, point, convention, _device_class(prefix), issues)
 
 
@@ -165,7 +174,7 @@ def parse_bridge(
             issues.append("bridge.different_strips")  # the second strip would be lost
         right_point = right.point
         right_unified = right.unified(separator)
-    elif is_valid_label(right_text):
+    elif is_valid_label(right_text, primed=True):
         right_point = right_text
         right_unified = f"{left.strip}{separator}{right_text}"
     else:

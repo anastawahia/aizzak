@@ -11,10 +11,13 @@ if TYPE_CHECKING:
     from app.modules.electrical.shared.rules import IdentifierRules
 
 _LABEL = re.compile(r"[A-Z0-9]{1,6}", re.ASCII)
+_PRIMED_LABEL = re.compile(r"[A-Z0-9]{1,6}['\"]?", re.ASCII)  # F3 (gap 27): a terminal's point
 
 
-def is_valid_label(label: str) -> bool:
-    return _LABEL.fullmatch(label) is not None
+def is_valid_label(label: str, *, primed: bool = False) -> bool:
+    """A label of 1..6 letters and digits; ``primed`` (a terminal's point, F3) also takes one
+    prime or double prime at its end (``37'``)."""
+    return (_PRIMED_LABEL if primed else _LABEL).fullmatch(label) is not None
 
 
 def role_of(rules: IdentifierRules, label: str | None) -> str | None:
@@ -24,14 +27,16 @@ def role_of(rules: IdentifierRules, label: str | None) -> str | None:
     return rules.connection_point_roles.get(label.upper())
 
 
-def check_label(rules: IdentifierRules, tail: str) -> tuple[str | None, tuple[str, ...]]:
+def check_label(
+    rules: IdentifierRules, tail: str, *, primed: bool = False
+) -> tuple[str | None, tuple[str, ...]]:
     """The label after the separator: (label, issues). A bad label is flagged, not lost."""
     sep = rules.connection_point_separator
     if not tail:
         return None, ("connection_point.empty",)
     if sep in tail:
         return None, ("connection_point.multiple",)
-    if not is_valid_label(tail):
+    if not is_valid_label(tail, primed=primed):
         return None, ("connection_point.malformed",)
     return tail, ()
 

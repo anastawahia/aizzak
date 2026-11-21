@@ -37,13 +37,13 @@ def _ansi(
         ("27-1", 27, "", 1, "voltage_protection"),
         ("87T-2", 87, "T", 2, "differential_protection"),
         ("21G", 21, "G", None, "distance_protection"),
-        ("12T", 12, "T", None, None),  # a valid number without a class stays valid
+        ("12T", 12, "T", None, None),  # F3: a number without a class is read with a hint only
     ],
 )
 def test_f2_ac_8_numbers_suffixes_instances_and_classes(
     text: str, number: int, suffix: str, instance: int | None, function_class: str | None
 ) -> None:
-    found = _ansi(text)
+    found = _ansi(text, hint=_DEVICE if function_class is None else None)
     assert found.kind is _DEVICE and found.convention is Convention.ANSI
     assert found.valid and not found.issues and found.alternatives == ()
     assert found.ansi is not None and found.ansi.instance == instance
@@ -162,11 +162,11 @@ def test_f2_ac_12_every_ansi_class_is_a_class_name() -> None:
         ("32A", None, False),  # the rating letter
         ("25A", None, False),
         ("50A", None, False),
-        ("16A", None, False),  # no class for 16
-        ("4P", None, False),
-        ("2P", None, False),
-        ("1N", None, False),
-        ("24V", None, False),
+        ("16A", _DEVICE, False),  # no class for 16: read with context, F3
+        ("4P", _DEVICE, False),
+        ("2P", _DEVICE, False),
+        ("1N", _DEVICE, False),
+        ("24V", _DEVICE, False),
         ("52", IdentifierKind.ANSI_DEVICE, False),  # a bare number proves nothing
         ("50/51", None, False),  # a compound proves nothing
         ("87QZ", None, False),  # invalid: an unknown suffix
@@ -176,3 +176,27 @@ def test_the_ansi_evidence_rule(text: str, hint: IdentifierKind | None, evidence
     found = _ansi(text, hint=hint)
     assert found.kind is _DEVICE
     assert is_ansi_evidence(found, ANSI.rules) is evidence
+
+
+def test_f3_ac_6_a_suffix_with_a_trailing_digit() -> None:
+    found = _ansi("59G2")
+    assert found.kind is _DEVICE and found.valid and found.convention is Convention.ANSI
+    assert found.ansi is not None and found.ansi.instance == 2
+    (function,) = found.ansi.functions
+    assert (function.number, function.suffix) == (59, "G")
+    assert function.function_class == "voltage_protection"
+    assert found.forms.canonical == "59G2" and found.forms.search_keys == ("59G2",)
+    assert is_ansi_evidence(found, ANSI.rules)  # a class and an instance
+    # 14 has no class: no device without context, a device with it (the instance is 6)
+    assert ANSI.parse("14B6") is None
+    in_context = _ansi("14B6", hint=_DEVICE)
+    assert in_context.ansi is not None and in_context.ansi.instance == 6
+    assert in_context.ansi.functions[0].function_class is None
+    # the suffix, the digit AND the dash together name two instances: no identifier
+    assert ANSI.parse("59G2-1") is None
+    assert ANSI.parse("59G2-1", hint=_DEVICE) is None
+    # two digits after a suffix are no instance
+    assert ANSI.parse("59G22") is None
+    # an unknown suffix with a digit is still reported, not dropped
+    unknown = _ansi("87QZ1")
+    assert not unknown.valid and unknown.issues == (ISSUE_UNKNOWN_SUFFIX,)

@@ -3,9 +3,11 @@
 # `source`: appendix-a | vendor-c (FR-ID-14, not claimed) | extra | invalid | invalid-or-prose.
 # `kind = "none"` means "no identifier at all". Absent optional fields mean none/empty.
 # `select` (D-36, optional) is a table of RuleSelection field names (`conventions`,
-# `cross_reference_format`, `extra_ansi_suffixes`): the case is parsed with the rules narrowed
-# by it. A case without `select` is parsed with the packaged, unnarrowed rules. The cases from
-# c193 on are F2 (KKS, ANSI, digits-first terminals), all with invented examples.
+# `cross_reference_format`, `extra_ansi_suffixes`, `wire_number_patterns`): the case is parsed
+# with the rules narrowed by it. A case without `select` is parsed with the packaged,
+# unnarrowed rules. The cases from c193 on are F2 (KKS, ANSI, digits-first terminals) and, from
+# c237 on, F3 (identifier groups, ratings, ANSI without context, location references, KKS forms,
+# primes), all with invented examples. `group` (F3) is the members of an identifier group.
 
 [[case]]
 id = "c001"
@@ -2614,14 +2616,13 @@ id = "c226"
 text = "12/3"
 select = { conventions = ["iec_81346", "ansi"] }
 source = "extra"
-kind = "ansi_device"
+kind = "cross_reference"
 valid = true
-convention = "ansi"
 aspects = []
-ansi = { functions = [{ number = 12, suffix = "" }, { number = 3, suffix = "" }] }
-alternatives = ["cross_reference"]
+variant = "page_slash_column"
+alternatives = ["ansi_device"]
 canonical = "12/3"
-search_keys = ["12/3", "12", "3"]
+search_keys = ["12/3"]
 
 [[case]]
 id = "c227"
@@ -2739,3 +2740,525 @@ aspects = []
 issues = ["kks.letter_in_digit_position", "kks.digit_in_letter_position"]
 canonical = "2OXYZ10A0123"
 search_keys = ["2OXYZ10A0123"]
+
+
+[[case]]
+id = "c237"
+text = "X7:41,42,43"
+select = { conventions = ["iec_81346"] }
+source = "appendix-a"
+kind = "identifier_group"
+valid = true
+canonical = "X7:41,42,43"
+search_keys = ["X7:41,42,43", "X7:41", "X7:42", "X7:43"]
+aspects = []
+convention = "iec_81346"
+group = { form = "list", separator = ",", members = [{ text = "X7:41", kind = "terminal", valid = true }, { text = "X7:42", kind = "terminal", valid = true }, { text = "X7:43", kind = "terminal", valid = true }] }
+
+[[case]]
+id = "c238"
+text = "QS7-QS9"
+select = { conventions = ["cn_letter_codes"] }
+source = "appendix-a"
+kind = "identifier_group"
+valid = true
+canonical = "QS7-QS9"
+search_keys = ["QS7-QS9", "QS7", "QS8", "QS9"]
+aspects = []
+convention = "cn_letter_codes"
+group = { form = "range", separator = "-", members = [{ text = "QS7", kind = "letter_code", valid = true }, { text = "QS8", kind = "letter_code", valid = true }, { text = "QS9", kind = "letter_code", valid = true }] }
+
+[[case]]
+id = "c239"
+text = "QS7\\8"
+select = { conventions = ["cn_letter_codes"] }
+source = "appendix-a"
+kind = "identifier_group"
+valid = true
+canonical = "QS7\\8"
+search_keys = ["QS7\\8", "QS7", "QS8"]
+aspects = []
+convention = "cn_letter_codes"
+group = { form = "suffix_list", separator = "\\", members = [{ text = "QS7", kind = "letter_code", valid = true }, { text = "QS8", kind = "letter_code", valid = true }] }
+
+[[case]]
+id = "c240"
+text = "20XYZ10AB131/2/3"
+select = { conventions = ["iec_81346", "kks"] }
+source = "appendix-a"
+kind = "identifier_group"
+valid = true
+canonical = "20XYZ10AB131/2/3"
+search_keys = ["20XYZ10AB131/2/3", "20XYZ10AB131", "20XYZ10AB132", "20XYZ10AB133"]
+aspects = []
+convention = "kks"
+group = { form = "suffix_list", separator = "/", members = [{ text = "20XYZ10AB131", kind = "kks_tag", valid = true }, { text = "20XYZ10AB132", kind = "kks_tag", valid = true }, { text = "20XYZ10AB133", kind = "kks_tag", valid = true }] }
+
+[[case]]
+id = "c241"
+text = "27.6E"
+source = "appendix-a"
+kind = "cross_reference"
+valid = true
+canonical = "27.6E"
+search_keys = ["27.6E"]
+aspects = []
+variant = "page_dot_location"
+
+[[case]]
+id = "c242"
+text = ".6E"
+source = "appendix-a"
+kind = "cross_reference"
+valid = true
+canonical = ".6E"
+search_keys = [".6E"]
+aspects = []
+variant = "same_page_location"
+
+[[case]]
+id = "c243"
+text = "20XYZ10AB123-CD45"
+select = { conventions = ["iec_81346", "kks"] }
+source = "appendix-a"
+kind = "kks_tag"
+valid = true
+canonical = "20XYZ10AB123-CD45"
+search_keys = ["20XYZ10AB123-CD45", "20XYZ10AB123CD45"]
+aspects = []
+convention = "kks"
+kks = { form = "component", class = "component", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123", runs = ["AB", "123"] }, { name = "component", level = 3, text = "CD45", runs = ["CD", "45"] }] }
+
+[[case]]
+id = "c244"
+text = "20XYZ"
+select = { conventions = ["iec_81346", "kks"] }
+source = "appendix-a"
+kind = "kks_tag"
+valid = true
+canonical = "20XYZ"
+search_keys = ["20XYZ"]
+aspects = []
+convention = "kks"
+kks = { form = "system_code", class = "system", parts = [{ name = "system_code", level = 1, text = "20XYZ", runs = ["20", "XYZ"] }] }
+
+[[case]]
+id = "c245"
+text = "1X-37'"
+select = { conventions = ["iec_81346"] }
+source = "appendix-a"
+kind = "terminal"
+valid = true
+canonical = "1X-37'"
+search_keys = ["1X-37'", "1X:37'"]
+aspects = []
+convention = "iec_81346"
+connection_point = "37'"
+device_class = "terminal_strip"
+
+[[case]]
+id = "c246"
+text = "59G2"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "appendix-a"
+kind = "ansi_device"
+valid = true
+canonical = "59G2"
+search_keys = ["59G2"]
+aspects = []
+convention = "ansi"
+device_class = "voltage_protection"
+ansi = { functions = [{ number = 59, suffix = "G", class = "voltage_protection" }], instance = 2 }
+
+[[case]]
+id = "c247"
+text = "X7:41，42，43"
+select = { conventions = ["iec_81346"] }
+source = "extra"
+kind = "identifier_group"
+valid = true
+canonical = "X7:41,42,43"
+search_keys = ["X7:41,42,43", "X7:41", "X7:42", "X7:43"]
+aspects = []
+convention = "iec_81346"
+group = { form = "list", separator = ",", members = [{ text = "X7:41", kind = "terminal", valid = true }, { text = "X7:42", kind = "terminal", valid = true }, { text = "X7:43", kind = "terminal", valid = true }] }
+
+[[case]]
+id = "c248"
+text = "X7:41、42、43"
+select = { conventions = ["iec_81346"] }
+source = "extra"
+kind = "identifier_group"
+valid = true
+canonical = "X7:41,42,43"
+search_keys = ["X7:41,42,43", "X7:41", "X7:42", "X7:43"]
+aspects = []
+convention = "iec_81346"
+group = { form = "list", separator = ",", members = [{ text = "X7:41", kind = "terminal", valid = true }, { text = "X7:42", kind = "terminal", valid = true }, { text = "X7:43", kind = "terminal", valid = true }] }
+
+[[case]]
+id = "c249"
+text = "QS7,QS8"
+select = { conventions = ["cn_letter_codes"] }
+source = "extra"
+kind = "identifier_group"
+valid = true
+canonical = "QS7,QS8"
+search_keys = ["QS7,QS8", "QS7", "QS8"]
+aspects = []
+convention = "cn_letter_codes"
+group = { form = "list", separator = ",", members = [{ text = "QS7", kind = "letter_code", valid = true }, { text = "QS8", kind = "letter_code", valid = true }] }
+
+[[case]]
+id = "c250"
+text = "X7:41,X7:45,46"
+select = { conventions = ["iec_81346"] }
+source = "extra"
+kind = "identifier_group"
+valid = true
+canonical = "X7:41,X7:45,46"
+search_keys = ["X7:41,X7:45,46", "X7:41", "X7:45", "X7:46"]
+aspects = []
+convention = "iec_81346"
+group = { form = "list", separator = ",", members = [{ text = "X7:41", kind = "terminal", valid = true }, { text = "X7:45", kind = "terminal", valid = true }, { text = "X7:46", kind = "terminal", valid = true }] }
+
+[[case]]
+id = "c251"
+text = "38Y-43Y"
+select = { conventions = ["iec_81346"], wire_number_patterns = ["digits_letter"] }
+source = "extra"
+kind = "identifier_group"
+valid = true
+canonical = "38Y-43Y"
+search_keys = ["38Y-43Y", "38Y", "39Y", "40Y", "41Y", "42Y", "43Y"]
+aspects = []
+group = { form = "range", separator = "-", members = [{ text = "38Y", kind = "wire_number", valid = true }, { text = "39Y", kind = "wire_number", valid = true }, { text = "40Y", kind = "wire_number", valid = true }, { text = "41Y", kind = "wire_number", valid = true }, { text = "42Y", kind = "wire_number", valid = true }, { text = "43Y", kind = "wire_number", valid = true }] }
+
+[[case]]
+id = "c252"
+text = "38Y"
+select = { conventions = ["iec_81346", "ansi"], wire_number_patterns = ["sequential", "digits_letter"] }
+source = "extra"
+kind = "wire_number"
+valid = true
+canonical = "38Y"
+search_keys = ["38Y"]
+aspects = []
+variant = "digits_letter"
+alternatives = ["ansi_device"]
+
+[[case]]
+id = "c253"
+text = "59Y"
+select = { conventions = ["iec_81346", "ansi"], wire_number_patterns = ["sequential", "digits_letter"] }
+source = "extra"
+kind = "wire_number"
+valid = true
+canonical = "59Y"
+search_keys = ["59Y"]
+aspects = []
+variant = "digits_letter"
+alternatives = ["ansi_device"]
+
+[[case]]
+id = "c254"
+text = "59Y"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "extra"
+kind = "ansi_device"
+valid = true
+canonical = "59Y"
+search_keys = ["59Y"]
+aspects = []
+convention = "ansi"
+device_class = "voltage_protection"
+ansi = { functions = [{ number = 59, suffix = "Y", class = "voltage_protection" }] }
+
+[[case]]
+id = "c255"
+text = "X7:41"
+select = { conventions = ["cn_letter_codes"] }
+source = "extra"
+kind = "terminal"
+valid = true
+canonical = "X7:41"
+search_keys = ["X7:41"]
+aspects = []
+convention = "cn_letter_codes"
+connection_point = "41"
+device_class = "terminal_strip"
+
+[[case]]
+id = "c256"
+text = "20XYZ10AB123CD456"
+select = { conventions = ["iec_81346", "kks"] }
+source = "extra"
+kind = "kks_tag"
+valid = true
+canonical = "20XYZ10AB123CD456"
+search_keys = ["20XYZ10AB123CD456"]
+aspects = []
+convention = "kks"
+kks = { form = "component_wide", class = "component", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123", runs = ["AB", "123"] }, { name = "component_wide", level = 3, text = "CD456", runs = ["CD", "456"] }] }
+
+[[case]]
+id = "c257"
+text = "20XYZ10-AB123"
+select = { conventions = ["iec_81346", "kks"] }
+source = "extra"
+kind = "kks_tag"
+valid = true
+canonical = "20XYZ10-AB123"
+search_keys = ["20XYZ10-AB123", "20XYZ10AB123"]
+aspects = []
+convention = "kks"
+kks = { form = "equipment", class = "equipment", parts = [{ name = "system", level = 1, text = "20XYZ10", runs = ["20", "XYZ", "10"] }, { name = "equipment", level = 2, text = "AB123", runs = ["AB", "123"] }] }
+
+[[case]]
+id = "c258"
+text = "1X-37\""
+select = { conventions = ["iec_81346"] }
+source = "extra"
+kind = "terminal"
+valid = true
+canonical = "1X-37\""
+search_keys = ["1X-37\"", "1X:37\""]
+aspects = []
+convention = "iec_81346"
+connection_point = "37\""
+device_class = "terminal_strip"
+
+[[case]]
+id = "c259"
+text = "23/4"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "extra"
+kind = "cross_reference"
+valid = true
+canonical = "23/4"
+search_keys = ["23/4"]
+aspects = []
+variant = "page_slash_column"
+alternatives = ["ansi_device"]
+
+[[case]]
+id = "c260"
+text = "14B6"
+hint = "ansi_device"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "extra"
+kind = "ansi_device"
+valid = true
+canonical = "14B6"
+search_keys = ["14B6"]
+aspects = []
+convention = "ansi"
+ansi = { functions = [{ number = 14, suffix = "B" }], instance = 6 }
+
+[[case]]
+id = "c261"
+text = "27.6"
+source = "extra"
+kind = "cross_reference"
+valid = true
+canonical = "27.6"
+search_keys = ["27.6"]
+aspects = []
+variant = "page_dot_column"
+
+[[case]]
+id = "c262"
+text = "X23-X37"
+select = { conventions = ["iec_81346"] }
+source = "invalid"
+kind = "identifier_group"
+valid = false
+canonical = "X23-X37"
+search_keys = ["X23-X37"]
+aspects = []
+issues = ["group.member_unreadable"]
+group = { form = "range", separator = "-", members = [{ text = "X23", kind = "none" }, { text = "X24", kind = "none" }, { text = "X25", kind = "none" }, { text = "X26", kind = "none" }, { text = "X27", kind = "none" }, { text = "X28", kind = "none" }, { text = "X29", kind = "none" }, { text = "X30", kind = "none" }, { text = "X31", kind = "none" }, { text = "X32", kind = "none" }, { text = "X33", kind = "none" }, { text = "X34", kind = "none" }, { text = "X35", kind = "none" }, { text = "X36", kind = "none" }, { text = "X37", kind = "none" }] }
+
+[[case]]
+id = "c263"
+text = "QS7-QS99"
+select = { conventions = ["cn_letter_codes"] }
+source = "invalid"
+kind = "identifier_group"
+valid = false
+canonical = "QS7-QS99"
+search_keys = ["QS7-QS99"]
+aspects = []
+issues = ["group.too_many_members"]
+group = { form = "range", separator = "-", members = [] }
+
+[[case]]
+id = "c264"
+text = "X7:41,,42"
+select = { conventions = ["iec_81346"] }
+source = "invalid"
+kind = "identifier_group"
+valid = false
+canonical = "X7:41,,42"
+search_keys = ["X7:41,,42", "X7:41", "X7:42"]
+aspects = []
+convention = "iec_81346"
+issues = ["group.empty_member"]
+group = { form = "list", separator = ",", members = [{ text = "X7:41", kind = "terminal", valid = true }, { text = "", kind = "none" }, { text = "X7:42", kind = "terminal", valid = true }] }
+
+[[case]]
+id = "c265"
+text = "59G2-1"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c266"
+text = "8Y"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c267"
+text = "8P"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c268"
+text = "16F"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c269"
+text = "23-4"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c270"
+text = "4-23"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c271"
+text = "14B6"
+select = { conventions = ["iec_81346", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c272"
+text = "3X-41"
+select = { conventions = ["nfpa_jic", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c273"
+text = "37MVA"
+select = { conventions = ["iec_81346", "gbt_5094", "cn_letter_codes", "nfpa_jic", "kks", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c274"
+text = "47Hz"
+select = { conventions = ["iec_81346", "gbt_5094", "cn_letter_codes", "nfpa_jic", "kks", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c275"
+text = "17VA"
+select = { conventions = ["iec_81346", "gbt_5094", "cn_letter_codes", "nfpa_jic", "kks", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c276"
+text = "2PH"
+select = { conventions = ["iec_81346", "gbt_5094", "cn_letter_codes", "nfpa_jic", "kks", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c277"
+text = "7KW"
+select = { conventions = ["iec_81346", "gbt_5094", "cn_letter_codes", "nfpa_jic", "kks", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c278"
+text = "13mA"
+select = { conventions = ["iec_81346", "gbt_5094", "cn_letter_codes", "nfpa_jic", "kks", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c279"
+text = "7-29kV"
+select = { conventions = ["iec_81346", "gbt_5094", "cn_letter_codes", "nfpa_jic", "kks", "ansi"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c280"
+text = "37kV"
+select = { conventions = ["cn_letter_codes"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c281"
+text = "29kA"
+select = { conventions = ["cn_letter_codes"] }
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c282"
+text = "3KA"
+select = { conventions = ["cn_letter_codes"] }
+source = "invalid-or-prose"
+kind = "letter_code"
+valid = true
+canonical = "3KA"
+search_keys = ["3KA", "KA3"]
+aspects = []
+convention = "cn_letter_codes"
+device_class = "relay"
+
+[[case]]
+id = "c283"
+text = "0.7"
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c284"
+text = "0.6E"
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c285"
+text = "⑰"
+source = "invalid-or-prose"
+kind = "none"
+
+[[case]]
+id = "c286"
+text = "QS9-QS7"
+select = { conventions = ["cn_letter_codes"] }
+source = "invalid-or-prose"
+kind = "none"

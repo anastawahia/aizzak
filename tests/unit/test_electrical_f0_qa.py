@@ -99,8 +99,8 @@ def test_f0_qa_curves_inside_a_form_xobject_are_read() -> None:
 
 
 # --------------------------------------------------------------------- classification
-def test_f0_qa_pipeline_version_is_1_1_0() -> None:
-    assert PIPELINE_VERSION == "1.1.0"  # F0-AC-5: no other test pinned the bump
+def test_f0_qa_pipeline_version_is_1_2_0() -> None:
+    assert PIPELINE_VERSION == "1.2.0"  # F0-AC-5; F3 bumped it with the new token sample
 
 
 def test_f0_qa_no_text_many_paths_and_a_small_image_is_outlined() -> None:

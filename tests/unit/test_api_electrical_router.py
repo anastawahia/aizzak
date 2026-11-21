@@ -475,6 +475,32 @@ def test_f2_ac_16_the_new_fields_are_saved_validated_and_defaulted(env: Env) -> 
     assert env.get(path).json()["version"] == 3  # none of the refused bodies was stored
 
 
+def test_f3_ac_4_opt_in_wire_pattern_names_are_accepted(env: Env) -> None:
+    created = env.project()
+    path = f"/projects/{created['id']}/profile"
+    saved = env.put(
+        path,
+        {
+            "body": {
+                "schema": 1,
+                "wire_number_patterns": ["sequential", "digits_letter", "letter_digits"],
+            }
+        },
+    )
+    assert saved.status_code == 200 and saved.json()["version"] == 2
+    assert saved.json()["body"]["wire_number_patterns"] == sorted(
+        ["sequential", "digits_letter", "letter_digits"]
+    )
+    assert env.get(path).json()["body"] == saved.json()["body"]
+    for hostile in ("digits_number", _HOSTILE, ".*"):
+        refused = env.put(path, {"body": {"schema": 1, "wire_number_patterns": [hostile]}})
+        assert refused.status_code == 422
+        assert _code(refused) == "electrical.invalid_profile"
+        assert refused.json()["detail"].startswith("wire_number_patterns[0]: ")
+        assert hostile not in refused.text
+    assert env.get(path).json()["version"] == 2
+
+
 # ======================================================================= registration (AC-6)
 def test_registering_a_document_answers_202_with_the_document_and_its_queued_job(
     env: Env,

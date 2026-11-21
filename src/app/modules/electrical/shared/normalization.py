@@ -31,6 +31,19 @@ from app.modules.electrical.shared.kinds import NormalizedForms
 _DASHES = dict.fromkeys(
     (0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015, 0x2212, 0xFE58, 0xFE63, 0xFF0D), "-"
 )
+# F3 (gap 34): the ideographic comma and its variants fold to "," (the item separator of a
+# list), the prime and double prime fold to ' and " (the point of a terminal, 1X-37')
+_PUNCTUATION = {
+    0x3001: ",", 0xFE51: ",", 0xFF64: ",",  # ideographic comma, small, half-width
+    0x2032: "'", 0x2033: '"',  # prime, double prime
+}  # fmt: skip
+_ENCLOSED = (
+    range(0x2460, 0x2500),  # circled, parenthesised and dotted numbers; enclosed alphanumerics
+    range(0x2776, 0x2794),  # dingbat circled numbers
+    range(0x3251, 0x3260),  # circled numbers 21..35
+    range(0x32B1, 0x32C0),  # circled numbers 36..50
+    range(0x1F100, 0x1F10D),  # digit full stop / comma
+)
 _LEADING_ZEROS = re.compile(r"(?<!\d)0+(?=\d)", re.ASCII)
 # a plain tag: letters, ONE separator, digits (``F-0001``); T-21 says it equals ``F0001``.
 # Matched on the canonical form, so ``-K-5`` (a designation) is never read as the tag ``K5``.
@@ -65,7 +78,7 @@ ISSUE_NON_ASCII = "text.non_ascii"  # INC1-Q-6: what stays non-ASCII (e.g. a com
 NON_INVALIDATING_ISSUES = frozenset({ISSUE_BIDI})  # flagged, but the identifier stays valid
 
 
-def _is_space(ch: str) -> bool:
+def is_space(ch: str) -> bool:
     """Whitespace: tab, LF, CR, VT, FF and the space separators (Zs, Zl, Zp). Other
     controls that ``str.isspace`` accepts (U+001C..U+001F, U+0085) are NOT whitespace."""
     return ch in "\t\n\r\v\f" or unicodedata.category(ch) in ("Zs", "Zl", "Zp")
@@ -74,13 +87,17 @@ def _is_space(ch: str) -> bool:
 def _is_hidden(ch: str) -> bool:
     """Invisible and not whitespace: control (Cc), format (Cf) or default-ignorable."""
     code = ord(ch)
-    if _is_space(ch):
+    if is_space(ch):
         return False
     return unicodedata.category(ch) in ("Cc", "Cf") or code in _IGNORABLE
 
 
 def _fold(text: str) -> str:
-    folded = unicodedata.normalize("NFKC", text).translate(_DASHES)
+    if text.isascii():
+        return text  # NFKC, the dash and punctuation tables and the digit fold change nothing
+    # the punctuation first as well: NFKC turns a double prime into two primes
+    folded = unicodedata.normalize("NFKC", text.translate(_PUNCTUATION))
+    folded = folded.translate(_DASHES).translate(_PUNCTUATION)
     return "".join(
         ch
         if ch.isascii()
@@ -89,15 +106,32 @@ def _fold(text: str) -> str:
     )
 
 
+def folded(text: str) -> str:
+    """The text folded as ``canonical_form`` folds it (NFKC, digits, dashes, no whitespace, no
+    hidden characters) but NOT upper-cased: a rating's unit is read in its written case (F3)."""
+    if text.isascii() and text.isprintable():
+        return text.replace(" ", "")  # no control, no hidden character: only spaces go
+    return "".join(ch for ch in _fold(text) if not is_space(ch) and not _is_hidden(ch))
+
+
 def canonical_form(text: str) -> str:
-    kept = "".join(ch for ch in _fold(text) if not _is_space(ch) and not _is_hidden(ch))
-    return kept.upper()
+    return folded(text).upper()
+
+
+def has_enclosed_number(text: str) -> bool:
+    """F3 (gap 14): a circled, parenthesised or dotted number (a page marker, a footnote): NFKC
+    would turn it into a plain number and read it as a wire."""
+    if text.isascii():
+        return False  # the blocks are all above U+2460: the common text needs no scan
+    return any(any(ord(ch) in block for block in _ENCLOSED) for ch in text)
 
 
 def text_issues(text: str) -> tuple[str, ...]:
     """Reasons the TEXT (not the identifier) is suspect: hidden characters were dropped
     (invalidating, FR-ID-10: flagged, never silently dropped) or bidi controls were
     present (reported, not invalidating)."""
+    if text.isascii() and text.isprintable():
+        return ()  # no control, no hidden, no bidi character
     issues: list[str] = []
     if any(_is_hidden(ch) and ord(ch) not in _BIDI for ch in _fold(text)):
         issues.append(ISSUE_HIDDEN)

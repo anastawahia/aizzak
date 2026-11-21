@@ -136,13 +136,15 @@ def test_a_four_digit_cable_suffix_is_valid_after_a_system_or_an_equipment_tag()
 
 
 def test_a_third_level_with_a_wrong_count_is_malformed_not_dropped() -> None:
-    for text in ("20XYZ10AB123CD4", "20XYZ10AB123CD456", "20XYZ10AB123CD45E"):
+    # F3 (F3-Q3): 20XYZ10AB123CD456 is now a valid component (component_wide)
+    for text in ("20XYZ10AB123CD4", "20XYZ10AB123CD4567", "20XYZ10AB123CD45E"):
         found = KKS.parse(text)
         assert found is not None and not found.valid and "kks.malformed" in found.issues, text
 
 
 def test_kks_never_claims_text_it_does_not_have_the_shape_of() -> None:
-    for text in ("7XY123", "XYZ10AB123", "20", "20XYZ", "20-XYZ10-AB123", "20XYZ10.AB123"):
+    # F3: 20XYZ is the system code (level 1, a tag, never evidence); see test_f3_ac_21_*
+    for text in ("7XY123", "XYZ10AB123", "20", "20-XYZ10-AB123", "20XYZ10.AB123"):
         assert not _is_kks(KKS.parse(text)), text
 
 
@@ -392,7 +394,8 @@ def test_a_suffix_is_membership_only_never_a_pattern() -> None:
     profile = _profile(device_function_numbers="ansi", ansi_suffixes=["QZ"])
     parser = IdentifierParser(RULES.narrowed(profile.rule_selection()))
     assert _is_ansi_valid(parser.parse("87QZ"))
-    for text in ("87W", "87WQZ", "87QQZ", "87QZ1"):
+    # F3: a suffix then ONE digit is an instance (87QZ1), so it is not in this list any more
+    for text in ("87W", "87WQZ", "87QQZ", "87QZ12"):
         found = parser.parse(text)
         assert not (found is not None and found.valid and found.kind is IdentifierKind.ANSI_DEVICE)
 

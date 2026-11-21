@@ -69,7 +69,7 @@ def selection_of(case: Case) -> RuleSelection | None:
         conventions=frozenset(Convention(name) for name in chosen.get("conventions", ())),
         plc_families=frozenset(),
         extra_aspects=(),
-        wire_number_patterns=(),
+        wire_number_patterns=tuple(chosen.get("wire_number_patterns", ())),
         cross_reference_format=chosen.get("cross_reference_format"),
         extra_voltage_labels=(),
         extra_ansi_suffixes=tuple(chosen.get("extra_ansi_suffixes", ())),
@@ -91,6 +91,26 @@ def parse_case(parser: IdentifierParser, case: Case) -> ParsedIdentifier | None:
             _NARROWED[key] = cached
         parser = cached[1]
     return parser.parse(case["text"], hint=hint_of(case))
+
+
+def _group_shape(parsed: ParsedIdentifier) -> dict[str, Any] | None:
+    """F3 (FR-ID-19): the form, the separator and, for each member, its text, its kind and its
+    validity (a member that reads as no identifier is ``kind = "none"``, without ``valid``)."""
+    group = parsed.group
+    if group is None:
+        return None
+    return {
+        "form": group.form.value,
+        "separator": group.separator,
+        "members": [
+            (
+                {"text": m.text, "kind": "none"}
+                if m.identifier is None
+                else {"text": m.text, "kind": m.identifier.kind.value, "valid": m.identifier.valid}
+            )
+            for m in group.members
+        ],
+    }
 
 
 def observed(parsed: ParsedIdentifier | None) -> dict[str, Any]:
@@ -146,6 +166,7 @@ def observed(parsed: ParsedIdentifier | None) -> dict[str, Any]:
             else None
         ),
         "alternatives": [k.value for k in parsed.alternatives] or None,
+        "group": _group_shape(parsed),
         "plc": (
             {
                 "family": parsed.plc.family.value,
@@ -166,6 +187,7 @@ def observed(parsed: ParsedIdentifier | None) -> dict[str, Any]:
 EXPECTED_KEYS = (
     "kind", "valid", "canonical", "search_keys", "aspects", "convention", "connection_point",
     "device_class", "pole_role", "variant", "issues", "plc", "kks", "ansi", "alternatives",
+    "group",
 )  # fmt: skip
 
 

@@ -137,17 +137,46 @@ def _characters(page: Any) -> tuple[int, int, int, int, int]:
     return chars, unmapped, pua, cjk, latin
 
 
+def _pieces(word: str) -> Iterator[str]:
+    """The tokens one word yields: itself when it fits ``MAX_TOKEN_CHARS``; else its pieces that
+    fit, cut at ``LONG_TOKEN_SPLIT`` (a long word without one is prose or noise: none). A
+    generator, so the caller can stop reading a long word as soon as its sample is full."""
+    token = word.strip(_TOKEN_TRIM)
+    if len(token) <= contract.MAX_TOKEN_CHARS:
+        if token:
+            yield token
+        return
+    start = 0
+    for index, char in enumerate(token + ","):
+        if char in contract.LONG_TOKEN_SPLIT or index == len(token):
+            piece = token[start:index].strip(_TOKEN_TRIM)
+            if piece and len(piece) <= contract.MAX_TOKEN_CHARS:
+                yield piece
+            start = index + 1
+
+
 def _tokens(words: list[Any], sample: int) -> list[str]:
-    """Distinct tokens in reading order (the words come sorted by block, line, word), each at
-    most ``MAX_TOKEN_CHARS``; longer ones are prose or noise and are skipped."""
-    seen: dict[str, None] = {}
+    """Distinct tokens, at most ``sample``, each at most ``MAX_TOKEN_CHARS``: first the tokens
+    with a digit in reading order (the words come sorted by block, line, word), then the others
+    in reading order (F3: identifiers almost always hold a digit, so the sample fills with
+    candidates, not with prose). A word longer than ``MAX_TOKEN_CHARS`` is split at
+    ``LONG_TOKEN_SPLIT`` first and its pieces that fit are kept; a long word without one is
+    skipped, as before."""
+    digits: dict[str, None] = {}
+    others: dict[str, None] = {}
     for word in words:
-        token = str(word[4]).strip(_TOKEN_TRIM)
-        if token and len(token) <= contract.MAX_TOKEN_CHARS and token not in seen:
-            seen[token] = None
-            if len(seen) >= sample:
-                break
-    return list(seen)
+        for token in _pieces(str(word[4])):
+            if token in digits or token in others:
+                continue
+            if any(char.isdigit() for char in token):
+                digits[token] = None
+                if len(digits) >= sample:
+                    break  # S-3: never past the sample, not even inside one long word
+            elif len(others) < sample:
+                others[token] = None
+        if len(digits) >= sample:
+            break
+    return [*digits, *others][:sample]
 
 
 def _paths(page: Any) -> tuple[int, int]:

@@ -290,7 +290,7 @@ def test_the_symbol_table_has_device_conventions_only() -> None:
 
 
 # --- the characterization --------------------------------------------------------------
-def _record(doc: str, tokens: Sequence[str], rules_version: str = "1.1.0") -> Characterization:
+def _record(doc: str, tokens: Sequence[str], rules_version: str = "1.2.0") -> Characterization:
     signals = [make_signals(1)]
     classes = [classify_page(s, ClassificationThresholds()) for s in signals]
     tally = PARSER.tally(tokens)
@@ -303,8 +303,8 @@ def _record(doc: str, tokens: Sequence[str], rules_version: str = "1.1.0") -> Ch
 
 def test_f2_ac_18_the_release_fingerprint_moves_with_the_versions() -> None:
     record = _record("d1", iec(40) + kks_tags(25))
-    assert record.shared_version == SHARED_VERSION == "1.3.0"
-    assert record.rules_version == RULES.version == "1.1.0"
+    assert record.shared_version == SHARED_VERSION == "1.4.0"
+    assert record.rules_version == RULES.version == "1.2.0"
     assert record.pipeline_version == PIPELINE_VERSION
     # the profile's own fingerprint does not depend on either
     assert DrawingProfile.default().fingerprint() == _MASTER_DEFAULT_FINGERPRINT
@@ -324,7 +324,7 @@ def test_the_characterization_counts_kks_and_ansi_and_claims_no_symbol_standard_
         Convention.KKS: 2,  # documents with at least 20 such identifiers
         Convention.ANSI: 1,
     }
-    assert aggregate([both]).versions["shared"] == ("1.3.0",)
+    assert aggregate([both]).versions["shared"] == ("1.4.0",)
 
 
 def test_a_tally_only_counts_kks_and_ansi_it_can_prove() -> None:

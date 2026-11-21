@@ -239,7 +239,11 @@ def test_the_known_pattern_names_are_the_packaged_ones() -> None:
 
 def test_every_cross_reference_choice_names_a_packaged_format() -> None:
     names = set(load_rules().cross_reference_formats)
-    assert {f.value for f in CrossReferenceFormat} - {"auto"} == names
+    # F3: the two location formats are read but are not formats a profile can name
+    assert {f.value for f in CrossReferenceFormat} - {"auto"} == names - {
+        "page_dot_location",
+        "same_page_location",
+    }
 
 
 async def test_profile_versions_are_consecutive_per_owner() -> None:

@@ -9,6 +9,13 @@ names a function, not a device, so without context it stays what it was (a wire 
 caller that has the context (a symbol bubble, a stacked label: STG-05) passes ``hint`` and gets
 the ``*_in_context`` readings. ``needs_context`` on the result tells the caller the full
 identity still has to come from context.
+
+F3 (FR-ID-16): without ``hint`` a number with a suffix or an instance is read as a device only
+when its number has a class in ``[ansi.functions]`` (a compound: every number has one). Wire
+numbers, ratings, ranges and poles (``38Y``, ``8P``, ``23-4``) have numbers outside the table, so
+they are no device without context. A wire-number pattern the profile named, and that matches
+the text, wins over the ANSI reading (the reading stays an alternative, as for a pinned
+cross-reference format). A suffix followed by ONE digit is an instance without the dash (``59G2``).
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ from app.modules.electrical.shared.kinds import (
     ParsedIdentifier,
 )
 from app.modules.electrical.shared.normalization import with_keys
+from app.modules.electrical.shared.patterns import compiled
 
 if TYPE_CHECKING:
     from app.modules.electrical.shared.rules import IdentifierRules
@@ -35,7 +43,8 @@ COMPOUND_SEPARATOR: Final = "/"
 MIN_COMPOUND: Final = 2
 _FUNCTION: Final = re.compile(r"(?P<num>[1-9][0-9]?)(?P<suffix>[A-Z]{0,3})", re.ASCII)
 _SINGLE: Final = re.compile(
-    r"(?P<num>[1-9][0-9]?)(?P<suffix>[A-Z]{1,3})?(?:-(?P<inst>[1-9][0-9]?))?", re.ASCII
+    r"(?P<num>[1-9][0-9]?)(?:(?P<suffix>[A-Z]{1,3})(?P<ord>[1-9])?)?(?:-(?P<inst>[1-9][0-9]?))?",
+    re.ASCII,
 )
 _BARE: Final = re.compile(r"[1-9][0-9]?", re.ASCII)
 
@@ -85,6 +94,10 @@ def read_compound(canonical: str, rules: IdentifierRules) -> AnsiDevice | None:
     return AnsiDevice(tuple(functions), None)
 
 
+def _every_function_has_a_class(device: AnsiDevice) -> bool:
+    return all(function.function_class is not None for function in device.functions)
+
+
 def _compound_result(
     device: AnsiDevice, canonical: str, forms: NormalizedForms
 ) -> ParsedIdentifier:
@@ -101,8 +114,8 @@ def parse_ansi_compound(
     canonical: str, forms: NormalizedForms, rules: IdentifierRules
 ) -> ParsedIdentifier | None:
     device = read_compound(canonical, rules)
-    if device is None:
-        return None
+    if device is None or not _every_function_has_a_class(device):
+        return None  # F3: without context a number outside the table is no device
     if rules.cross_reference_pinned and parse_cross_reference(canonical, forms, rules) is not None:
         return None  # the profile chose a format that reads this text: it is a cross-reference
     return _compound_result(device, canonical, forms)
@@ -117,6 +130,13 @@ def parse_ansi_compound_in_context(
     return None if device is None else _compound_result(device, canonical, forms)
 
 
+def _named_wire_reads(canonical: str, rules: IdentifierRules) -> bool:
+    """F3: the profile named its wire-number patterns and one of them matches the text."""
+    return rules.wire_number_pinned and any(
+        compiled(pattern).fullmatch(canonical) for pattern in rules.wire_number_patterns.values()
+    )
+
+
 def _single(
     canonical: str, forms: NormalizedForms, rules: IdentifierRules, *, bare: bool
 ) -> ParsedIdentifier | None:
@@ -126,10 +146,16 @@ def _single(
     if match is None:
         return None
     suffix, instance = match["suffix"] or "", match["inst"]
+    if match["ord"] is not None:
+        if instance is not None:
+            return None  # 59G2-1: two instances
+        instance = match["ord"]  # F3: a suffix then ONE digit is the instance (59G2)
     if not suffix and instance is None and not bare:
         return None  # a bare number is no device without context (FR-ID-16)
-    unknown = bool(suffix) and suffix not in rules.ansi.suffixes
     function = _function(match["num"], suffix, rules)
+    if not bare and (function.function_class is None or _named_wire_reads(canonical, rules)):
+        return None  # F3: no class, or a wire pattern the profile named: no device without context
+    unknown = bool(suffix) and suffix not in rules.ansi.suffixes
     return ParsedIdentifier(
         kind=IdentifierKind.ANSI_DEVICE,
         convention=Convention.ANSI,
